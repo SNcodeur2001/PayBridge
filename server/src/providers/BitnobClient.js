@@ -34,7 +34,12 @@ export class BitnobClient {
         signal: AbortSignal.timeout(15_000),
       })
     } catch (error) {
-      throw new AppError(502, `Connexion Bitnob impossible : ${error.message}`)
+      // Node's fetch often reports only "fetch failed"; the nested cause carries
+      // the useful transport detail (DNS, connection refused, TLS, timeout).
+      const cause = error.cause
+      const code = cause?.code ?? (error.name === 'TimeoutError' ? 'TIMEOUT' : error.name)
+      const detail = cause?.message ?? error.message
+      throw new AppError(502, `Connexion Bitnob impossible (${code}) : ${detail}`)
     }
 
     const json = await response.json().catch(() => ({}))

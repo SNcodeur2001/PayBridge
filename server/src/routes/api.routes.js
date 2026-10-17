@@ -6,9 +6,11 @@ import { createLightningRouter } from './lightning.routes.js'
 import { createAddressRouter } from './address.routes.js'
 import { createPayoutRouter } from './payout.routes.js'
 import { createEventRouter } from './event.routes.js'
+import { createBitnobRouter } from './bitnob.routes.js'
 
 export function createApiRouter(dependencies) {
   const router = Router()
+  router.use('/bitnob', createBitnobRouter(dependencies))
   router.use(createCatalogRouter(dependencies))
   router.use('/transfers', createTransferRouter(dependencies))
   router.use('/beneficiaries', createBeneficiaryRouter(dependencies))

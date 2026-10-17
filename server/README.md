@@ -13,6 +13,10 @@ npm run dev
 
 API locale : `http://localhost:4000`. Le dépôt mémoire est réinitialisé au redémarrage.
 
+## Vérifier la connexion Bitnob
+
+Configurer `BITNOB_CLIENT_ID` et `BITNOB_CLIENT_SECRET` dans `server/.env` ou dans le `.env` à la racine du dépôt, redémarrer le serveur puis appeler `GET /api/bitnob/whoami`. Cette route signe uniquement l’appel Bitnob `GET /api/whoami` et renvoie l’état du client, l’environnement et les permissions. Les autres fonctions restent simulées tant que `BITNOB_PAYMENTS_ENABLED=false`.
+
 ## Architecture
 
 ```text
@@ -52,7 +56,7 @@ Les services et fournisseurs utilisent des classes injectées dans `createApp`. 
 | `POST` | `/api/webhooks/bitnob` | Webhook Bitnob, signature HMAC et déduplication |
 | `GET` | `/api/events` | Changements d’état des transferts en SSE |
 
-La clé `API_KEY`, si configurée, protège `POST /api/payout` via `Authorization: Bearer <API_KEY>`. CORS autorise toutes les origines par défaut; définir `ALLOWED_ORIGINS` avec une liste CSV pour restreindre l’accès navigateur.
+La clé `API_KEY`, si configurée, protège `POST /api/payout` via `Authorization: Bearer <API_KEY>`. CORS autorise toutes les origines par défaut; définir `ALLOWED_ORIGINS` avec une liste CSV pour restreindre l’accès navigateur. Les opérations Bitnob de paiement restent désactivées par défaut, même si les identifiants sont présents.
 
 ## Configuration Bitnob et tunnel webhook
 

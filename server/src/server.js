@@ -3,7 +3,7 @@ import { createApp } from './app.js'
 
 const app = createApp()
 const server = app.listen(settings.port, () => {
-  const mode = process.env.BITNOB_CLIENT_ID && process.env.BITNOB_CLIENT_SECRET ? 'Bitnob LIVE' : 'simulation'
+  const mode = settings.bitnobPaymentsEnabled ? 'Bitnob LIVE' : 'simulation (Bitnob payments disabled)'
   console.log(`PayBridge API (${mode}) : http://localhost:${settings.port}`)
 })
 
