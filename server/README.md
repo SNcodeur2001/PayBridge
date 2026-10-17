@@ -1,54 +1,65 @@
 # PayBridge API
 
-Backend Express du prototype PayBridge. Il fonctionne actuellement avec un fournisseur de paiement simulé : aucune opération financière réelle ni aucun appel Bitnob n'est effectué.
-
-## Structure
-
-```text
-src/
-├── app.js                         # création/configuration Express
-├── server.js                      # démarrage HTTP
-├── config/paybridge.js             # pays, devises et données de démo
-├── providers/payment.provider.js   # contrat fournisseur + simulation actuelle
-├── repositories/memory.repository.js # stockage temporaire en mémoire
-└── routes/api.routes.js            # routes REST, webhook placeholder et SSE
-```
-
-Les routes consomment le contrat `paymentProvider`. L'adaptateur Bitnob viendra remplacer le fournisseur simulé; les routes et le format utilisé par le frontend pourront rester stables. Le stockage en mémoire est adapté au prototype : les données sont perdues au redémarrage.
+Backend Express du prototype PayBridge Africa. Les clés Bitnob restent côté serveur. Sans `BITNOB_CLIENT_ID` et `BITNOB_CLIENT_SECRET`, l’API démarre automatiquement avec le fournisseur simulé et n’effectue aucun paiement réel.
 
 ## Démarrer
 
 ```bash
+cd server
 npm install
 cp .env.example .env
 npm run dev
 ```
 
-Le serveur écoute sur `http://localhost:4000` par défaut.
+API locale : `http://localhost:4000`. Le dépôt mémoire est réinitialisé au redémarrage.
 
-## API actuelle
+## Architecture
 
 ```text
-GET  /api/health
-GET  /api/wallet
-GET  /api/rates
-GET  /api/banks/:country
-GET  /api/account-lookup?country&accountNumber&bankCode&method
-POST /api/quotes
-POST /api/transfers
-GET  /api/transfers
-GET  /api/transfers/:id
-GET  /api/beneficiaries
-POST /api/beneficiaries
-GET  /api/events                 # SSE, statuts de transfert
-POST /api/webhooks/bitnob        # indisponible en mode simulation (503)
+src/
+├── app.js                         # composition des dépendances et middleware Express
+├── server.js                      # cycle de vie du serveur HTTP
+├── config/                        # paramètres et données de référence
+├── core/                          # erreurs métier et fonctions communes
+├── middleware/                    # CORS, API key, erreurs, async handlers
+├── providers/                     # contrat fournisseur : simulation et Bitnob
+├── repositories/MemoryRepository.js # persistance prototype en mémoire
+├── routes/                        # routes regroupées par domaine
+└── services/                      # workflows métier, indépendants d'Express
 ```
 
-Les transferts simulés passent de `pending` à `processing`, puis à `completed` (ou `failed` pour le montant de démonstration se terminant par `.13`). Chaque réponse de transfert indique `demo: true`.
+Les services et fournisseurs utilisent des classes injectées dans `createApp`. Les routes ne contiennent que le traitement HTTP et la validation d’entrée; les règles de paiement sont partagées par le mode simulation et Bitnob. Pour remplacer le stockage mémoire, on peut fournir un autre repository sans réécrire les services.
 
-## Suite prévue
+## Endpoints
 
-1. Confirmer dans le compte et la documentation Bitnob les produits, corridors et accès disponibles.
-2. Implémenter `providers/bitnob.provider.js` derrière le même contrat.
-3. Ajouter la configuration et vérification de signature du webhook, puis exposer son URL publique avec ngrok ou Cloudflare Tunnel.
-4. Remplacer le dépôt mémoire par une base persistante si le prototype doit survivre aux redémarrages.
+| Méthode | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/health` | État du serveur et fournisseur actif |
+| `GET` | `/api/wallet` | Solde et portefeuilles |
+| `GET` | `/api/rates` | Taux de change |
+| `GET` | `/api/banks/:country` | Banques d’un pays |
+| `GET` | `/api/account-lookup?country&accountNumber&bankCode&method` | Recherche d’un titulaire |
+| `POST` | `/api/quotes` | Créer un devis |
+| `GET`, `POST` | `/api/transfers` | Lister ou créer un transfert |
+| `GET` | `/api/transfers/:id` | Consulter un transfert |
+| `GET`, `POST`, `PUT` | `/api/beneficiaries` | Lister, ajouter ou modifier un bénéficiaire (`PUT /:id`) |
+| `POST` | `/api/lightning/decode` | Décoder une facture Lightning |
+| `POST` | `/api/lightning/invoices` | Créer une facture Lightning |
+| `POST` | `/api/lightning/pay` | Payer une facture Lightning |
+| `POST` | `/api/addresses/validate` | Vérifier le format d’une adresse crypto |
+| `GET` | `/api/addresses/deposit?chain=BTC` | Obtenir une adresse de dépôt |
+| `POST` | `/api/payout` | Créer un payout pour une intégration B2B |
+| `POST` | `/api/webhooks/bitnob` | Webhook Bitnob, signature HMAC et déduplication |
+| `GET` | `/api/events` | Changements d’état des transferts en SSE |
+
+La clé `API_KEY`, si configurée, protège `POST /api/payout` via `Authorization: Bearer <API_KEY>`. CORS autorise toutes les origines par défaut; définir `ALLOWED_ORIGINS` avec une liste CSV pour restreindre l’accès navigateur.
+
+## Configuration Bitnob et tunnel webhook
+
+Configurer les identifiants et `BITNOB_WEBHOOK_SECRET` dans `.env`, puis définir `PUBLIC_BASE_URL` avec l’URL HTTPS fournie par ngrok ou Cloudflare Tunnel. En mode live, les webhooks exigent une signature valide. Le serveur utilise un polling de secours toutes les 20 secondes pour les transferts qui ne sont pas terminés.
+
+## Limites du prototype
+
+- Le mode simulé reproduit les formes de réponse utiles à la démo; les adresses, taux, wallets, factures et statuts simulés ne correspondent pas à des fonds réels.
+- Les données et la déduplication des événements résident en mémoire. Une base persistante et un stockage durable des événements seront nécessaires avant une exploitation réelle.
+- Les endpoints Bitnob, corridors, champs et signature doivent être confirmés avec la documentation et les autorisations du compte avant activation live.

@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Backend PayBridge Africa — API Express avec fournisseur de paiement simulé",
+  "description": "Backend PayBridge Africa — API Express modulaire avec Bitnob et mode simulation",
   "scripts": {
     "dev": "node --watch src/server.js",
     "start": "node src/server.js"

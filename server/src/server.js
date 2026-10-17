@@ -1,9 +1,17 @@
-import './env.js'
+import { settings } from './config/settings.js'
 import { createApp } from './app.js'
 
-const port = Number(process.env.PORT ?? 4000)
 const app = createApp()
-
-app.listen(port, () => {
-  console.log(`PayBridge API (simulation) : http://localhost:${port}`)
+const server = app.listen(settings.port, () => {
+  const mode = process.env.BITNOB_CLIENT_ID && process.env.BITNOB_CLIENT_SECRET ? 'Bitnob LIVE' : 'simulation'
+  console.log(`PayBridge API (${mode}) : http://localhost:${settings.port}`)
 })
+
+function shutdown(signal) {
+  console.log(`${signal} reçu, arrêt du serveur…`)
+  server.close(() => process.exit(0))
+  setTimeout(() => process.exit(1), 10_000).unref()
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))
