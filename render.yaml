@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: paybridge-api
+    runtime: node
+    plan: free
+    region: frankfurt
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: 24.21.0
+      - key: BITNOB_PAYMENTS_ENABLED
+        value: "false"
+      - key: API_KEY
+        generateValue: true

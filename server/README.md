@@ -13,6 +13,14 @@ npm run dev
 
 API locale : `http://localhost:4000`. Le dépôt mémoire est réinitialisé au redémarrage.
 
+## Déployer sur Render
+
+Le fichier `render.yaml` à la racine configure un Web Service Node.js pour la branche `main`. Il utilise `server/` comme racine, `npm ci` pour l'installation, `npm start` pour démarrer, et `/api/health` pour le health check. Le serveur écoute sur `0.0.0.0` et le port fourni par Render via `PORT`.
+
+Pour créer le service, connecter le dépôt GitHub `SNcodeur2001/PayBridge` à Render puis créer un Blueprint depuis `render.yaml`. Le service démarre en simulation ; aucun identifiant Bitnob n'est nécessaire et les paiements live restent désactivés. Render génère `API_KEY` pour protéger `POST /api/payout` ; sa valeur est consultable dans l'environnement du service. Les autres endpoints restent publics comme dans la version actuelle.
+
+Le plan Free est configuré pour éviter tout coût par défaut. Le stockage étant en mémoire, les données de simulation sont perdues au redémarrage ou au réveil du service ; ce déploiement convient aux essais d'API, pas à une exploitation avec des données à conserver.
+
 ## Vérifier la connexion Bitnob
 
 Configurer `BITNOB_CLIENT_ID` et `BITNOB_CLIENT_SECRET` dans `server/.env` ou dans le `.env` à la racine du dépôt, redémarrer le serveur puis appeler `GET /api/bitnob/whoami`. Cette route signe uniquement l’appel Bitnob `GET /api/whoami` et renvoie l’état du client, l’environnement et les permissions. Les autres fonctions restent simulées tant que `BITNOB_PAYMENTS_ENABLED=false`.
