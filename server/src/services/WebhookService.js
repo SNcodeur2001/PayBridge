@@ -13,10 +13,10 @@ export class WebhookService {
     this.#verifySignature(rawBody, signature)
     let event
     try { event = JSON.parse(rawBody.toString('utf8') || '{}') } catch { throw new AppError(400, 'Corps JSON du webhook invalide.') }
-    if (this.repository.rememberWebhookEvent(event.event_id)) return { received: true, dedup: true }
+    if (this.repository.rememberWebhookEvent(event.event_id ?? event.eventId)) return { received: true, dedup: true }
 
     const payout = event.data?.payout ?? event.data ?? {}
-    const transfer = this.repository.getTransferByReference(payout.reference)
+    const transfer = this.repository.getTransferByReference(payout.reference ?? event.data?.reference)
     const nextStatus = WEBHOOK_STATUS[event.event]
     if (transfer && nextStatus) this.repository.updateTransferStatus(transfer.id, nextStatus)
     return { received: true }
@@ -29,7 +29,7 @@ export class WebhookService {
       throw new AppError(401, 'Secret de webhook Bitnob non configuré.')
     }
     if (!signature) throw new AppError(401, 'Signature webhook manquante.')
-    const expected = `sha256=${crypto.createHmac('sha256', secret).update(rawBody).digest('hex')}`
+    const expected = crypto.createHmac('sha512', secret).update(rawBody).digest('hex')
     const expectedBuffer = Buffer.from(expected)
     const signatureBuffer = Buffer.from(signature)
     if (expectedBuffer.length !== signatureBuffer.length || !crypto.timingSafeEqual(expectedBuffer, signatureBuffer)) {
