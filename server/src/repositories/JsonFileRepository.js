@@ -17,8 +17,6 @@ export class JsonFileRepository extends MemoryRepository {
       const temporaryPath = `${this.filePath}.tmp`
       writeFileSync(temporaryPath, JSON.stringify({
         transfers: this.transfers,
-        beneficiaries: this.beneficiaries,
-        virtualAccountDeposits: this.virtualAccountDeposits,
         seenWebhookEvents: [...this.seenWebhookEvents],
       }, null, 2))
       renameSync(temporaryPath, this.filePath)
@@ -31,9 +29,7 @@ export class JsonFileRepository extends MemoryRepository {
     try {
       if (!existsSync(this.filePath)) return
       const data = JSON.parse(readFileSync(this.filePath, 'utf8'))
-      for (const key of ['transfers', 'beneficiaries', 'virtualAccountDeposits']) {
-        if (Array.isArray(data[key])) this[key] = data[key]
-      }
+      if (Array.isArray(data.transfers)) this.transfers = data.transfers.filter((transfer) => transfer.demo !== true)
       if (Array.isArray(data.seenWebhookEvents)) this.seenWebhookEvents = new Set(data.seenWebhookEvents)
     } catch (error) {
       console.warn('[repository] rechargement local impossible :', error.message)

@@ -12,6 +12,7 @@ export function createLightningRouter({ provider }) {
   router.post('/invoices', asyncHandler(async (req, res) => {
     const amountUsd = Number(req.body?.amountUsd)
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) throw new AppError(400, 'amountUsd doit être supérieur à zéro.')
+    if (!req.body?.description) throw new AppError(400, 'description est requis pour créer une facture Lightning.')
     res.status(201).json(await provider.createLightningInvoice({ amountUsd, description: req.body?.description }))
   }))
   router.post('/pay', asyncHandler(async (req, res) => {

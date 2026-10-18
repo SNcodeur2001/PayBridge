@@ -42,7 +42,13 @@ export class BitnobClient {
       throw new AppError(502, `Connexion Bitnob impossible (${code}) : ${detail}`)
     }
 
-    const json = await response.json().catch(() => ({}))
+    if (response.status === 204) return null
+    let json
+    try {
+      json = await response.json()
+    } catch {
+      throw new AppError(502, 'Réponse Bitnob invalide : le corps n’est pas un JSON exploitable.', { upstreamStatus: response.status })
+    }
     if (!response.ok || json.success === false) {
       throw new AppError(response.status >= 400 && response.status < 500 ? response.status : 502, json.detail ?? json.message ?? json.title ?? `Erreur Bitnob HTTP ${response.status}`, json)
     }

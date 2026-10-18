@@ -1,7 +1,6 @@
-import crypto from 'node:crypto'
 import { AppError } from '../core/AppError.js'
 import { createReference, nowIso } from '../core/utils.js'
-import { COUNTRIES, CURRENCIES } from '../config/paybridge.js'
+import { SUPPORTED_SEND_CURRENCIES } from '../config/paybridge.js'
 
 const PAYOUT_STATUSES = Object.freeze({ COMPLETED: 'completed', FAILED: 'failed', EXPIRED: 'failed', PENDING: 'processing', PROCESSING: 'processing', FUNDED: 'processing' })
 
@@ -12,39 +11,46 @@ export class PaymentService {
     this.repository = repository
   }
 
-  async createQuote({ amount, toCountry, sendCurrency = 'USD', fundingMode = 'offchain' }) {
-    const receiveCurrency = Object.hasOwn(COUNTRIES, toCountry) ? COUNTRIES[toCountry] : null
-    if (!receiveCurrency) throw new AppError(400, `Pays non supporté : ${toCountry}`)
-    if (!Object.hasOwn(CURRENCIES, sendCurrency)) throw new AppError(400, `Devise non supportée : ${sendCurrency}`)
-    return this.provider.createQuote({ amount: Number(amount), toCountry, sendCurrency, receiveCurrency, fundingMode })
+  async createQuote({ amount, toCountry, sendCurrency = 'USD', receiveCurrency, reference, paymentReason, fundingMode = 'offchain', chain }) {
+    if (!SUPPORTED_SEND_CURRENCIES.includes(sendCurrency)) throw new AppError(400, `Devise non supportée par Bitnob : ${sendCurrency}`)
+    const catalog = await this.provider.getSupportedPayoutCountries()
+    const country = catalog.countries.find((item) => item.code === String(toCountry).toUpperCase())
+    if (!country) throw new AppError(400, `Pays non pris en charge par Bitnob : ${toCountry}`)
+    const targetCurrency = receiveCurrency ? String(receiveCurrency).toUpperCase() : undefined
+    const corridor = country.corridors?.find((item) => item.currency === targetCurrency) ?? (!targetCurrency ? country.corridors?.[0] : null)
+    if (!corridor) throw new AppError(400, `Devise de réception non prise en charge par Bitnob pour ${toCountry} : ${receiveCurrency}`)
+    return this.provider.createQuote({ amount: Number(amount), toCountry: country.code, sendCurrency, receiveCurrency: corridor.currency, reference, paymentReason, fundingMode, chain })
   }
 
-  async createTransfer({ amount, toCountry, sendCurrency = 'USD', beneficiary, channel, fromCountry = 'SN', paymentReason = 'family_support', fundingMode = 'offchain' }) {
+  async createTransfer({ amount, toCountry, sendCurrency = 'USD', receiveCurrency, beneficiary, channel, fromCountry, paymentReason = 'family_support', fundingMode = 'offchain', chain }) {
     const selectedChannel = channel ?? beneficiary.channels?.find((item) => item.isDefault) ?? beneficiary
     const kind = selectedChannel.kind ?? selectedChannel.method ?? beneficiary.method
     if (kind === 'crypto') return this.#createCryptoTransfer({ amount, toCountry, sendCurrency, beneficiary, channel: selectedChannel, fromCountry })
     if (kind === 'lightning') return this.#createLightningTransfer({ amount, toCountry, sendCurrency, beneficiary, channel: selectedChannel, fromCountry })
 
     const reference = createReference()
-    const receiveCurrency = COUNTRIES[toCountry]
-    const quote = await this.provider.createQuote({ amount: Number(amount), toCountry, sendCurrency, receiveCurrency, reference, paymentReason, fundingMode })
+    const quote = await this.createQuote({ amount: Number(amount), toCountry, sendCurrency, receiveCurrency, reference, paymentReason, fundingMode, chain })
     const transfer = this.repository.createTransfer({
       id: reference, reference, createdAt: nowIso(), pendingAt: nowIso(),
       beneficiaryId: beneficiary.id, beneficiaryName: beneficiary.name,
       fromCountry, toCountry, sendCurrency, amount: quote.amount, fee: quote.fee,
-      rate: quote.rate, receiveCurrency: COUNTRIES[toCountry], received: quote.received,
+      rate: quote.rate, receiveCurrency: quote.receiveCurrency, received: quote.received,
       method: kind === 'mobile' ? 'mobile' : 'bank', provider: selectedChannel.label ?? selectedChannel.provider ?? beneficiary.provider, paymentReason,
-      fundingMode, quoteId: quote.quoteId, status: 'pending', demo: !this.provider.isLive,
+      fundingMode, quoteId: quote.quoteId, status: 'pending',
     })
     try {
-      await this.provider.submitPayout(transfer, quote, { ...beneficiary, ...selectedChannel, method: kind === 'mobile' ? 'mobile' : 'bank' }, this.repository)
+      const payout = await this.provider.submitPayout(transfer, quote, { ...beneficiary, ...selectedChannel, method: kind === 'mobile' ? 'mobile' : 'bank' })
+      const { status, id: bitnobId, ...payoutFields } = payout
+      Object.assign(transfer, payoutFields, { id: transfer.id, reference: transfer.reference, bitnobId, bitnob: payout.bitnob })
+      this.repository.persist?.()
+      if (status) this.repository.updateTransferStatus(transfer.id, status)
     } catch (error) {
       // Once a live request has reached Bitnob, a 5xx/timeout can mean the remote
       // payout succeeded but its response was lost. Keep it reconcilable by reference.
-      if (!this.provider.isLive || Number(error.status) < 500) {
+      if (Number(error.status) < 500) {
         this.repository.updateTransferStatus(transfer.id, 'failed', { failureReason: error.message })
       }
-      if (this.provider.isLive && Number(error.status) >= 500) {
+      if (Number(error.status) >= 500) {
         throw new AppError(502, error.message, {
           ...(error.details && typeof error.details === 'object' ? error.details : {}),
           transferId: transfer.id, reference: transfer.reference,
@@ -61,10 +67,10 @@ export class PaymentService {
     const transfer = this.repository.createTransfer({
       id: reference, reference, createdAt: nowIso(), pendingAt: nowIso(),
       beneficiaryId: beneficiary.id, beneficiaryName: beneficiary.name,
-      fromCountry, toCountry, sendCurrency, amount: Number(amount), fee: 0,
-      rate: null, receiveCurrency: String(channel.asset ?? sendCurrency).toUpperCase(),
+      fromCountry, toCountry, sendCurrency, amount: Number(amount), fee: null,
+      rate: null, receiveCurrency: String(channel.asset).toUpperCase(),
       received: null, method: 'crypto', provider: channel.label ?? channel.provider ?? channel.chain ?? 'crypto',
-      status: 'pending', demo: !this.provider.isLive,
+      status: 'pending',
     })
     try {
       const result = await this.provider.submitCryptoTransfer({ transfer, channel, sourceCurrency: sendCurrency })
@@ -86,10 +92,10 @@ export class PaymentService {
     const transfer = this.repository.createTransfer({
       id: reference, reference, createdAt: nowIso(), pendingAt: nowIso(),
       beneficiaryId: beneficiary.id, beneficiaryName: beneficiary.name,
-      fromCountry, toCountry, sendCurrency, amount: Number(amount), fee: 0,
+      fromCountry, toCountry, sendCurrency, amount: Number(amount), fee: null,
       rate: null, receiveCurrency: 'SATS', received: null,
       method: 'lightning', provider: channel.label ?? 'Lightning',
-      status: 'pending', demo: !this.provider.isLive,
+      status: 'pending',
     })
     try {
       const result = await this.provider.payLightningInvoice(paymentRequest, reference)
@@ -106,29 +112,31 @@ export class PaymentService {
     }
   }
 
-  async createExternalPayout({ amount, toCountry, sendCurrency = 'USD', beneficiary: input, paymentReason = 'business_payment' }) {
-    const beneficiary = this.repository.findBeneficiary({ account: input.account, country: toCountry })
-      ?? this.repository.addBeneficiary({
-        id: `b-${crypto.randomUUID()}`, name: String(input.name).trim(), country: toCountry,
-        method: input.method ?? 'bank', provider: input.provider ?? '',
-        account: String(input.account), bankCode: input.bankCode,
-      })
-    const transfer = await this.createTransfer({ amount, toCountry, sendCurrency, beneficiary, fromCountry: 'API', paymentReason })
+  async createExternalPayout({ amount, toCountry, sendCurrency = 'USD', receiveCurrency, chain, fromCountry, beneficiary: input, paymentReason = 'business_payment' }) {
+    const beneficiary = {
+      ...input,
+      id: input.id ?? null,
+      name: String(input.name).trim(),
+      country: toCountry,
+      method: input.method ?? 'bank',
+      account: String(input.account),
+    }
+    const transfer = await this.createTransfer({ amount, toCountry, sendCurrency, receiveCurrency, chain, fromCountry, beneficiary, paymentReason })
     return {
       id: transfer.id, reference: transfer.reference, status: transfer.status,
       amount: transfer.amount, fee: transfer.fee, rate: transfer.rate,
       received: transfer.received, receiveCurrency: transfer.receiveCurrency, sendCurrency,
+      ...(transfer.bitnob ? { bitnob: transfer.bitnob, bitnobStatus: transfer.bitnobStatus } : {}),
     }
   }
 
   mapPayoutStatus(status = '') {
     const normalized = String(status).toUpperCase()
     if (normalized === 'SUCCESS') return 'completed'
-    return PAYOUT_STATUSES[normalized] ?? 'pending'
+    return PAYOUT_STATUSES[normalized] ?? (normalized.toLowerCase() || null)
   }
 
   async refreshPendingTransfers() {
-    if (!this.provider.isLive) return
     for (const transfer of this.repository.listTransfers()) {
       if (['completed', 'failed'].includes(transfer.status)) continue
       try {
@@ -136,9 +144,9 @@ export class PaymentService {
           ? await this.provider.getTransaction(transfer.providerRef ?? transfer.reference)
           : await this.provider.getPayoutStatus(transfer.reference)
         const nextStatus = ['crypto', 'lightning'].includes(transfer.method)
-          ? payout?.status ?? 'pending'
+          ? payout?.status
           : this.mapPayoutStatus(payout?.status)
-        if (nextStatus !== transfer.status) this.repository.updateTransferStatus(transfer.id, nextStatus)
+        if (nextStatus && nextStatus !== transfer.status) this.repository.updateTransferStatus(transfer.id, nextStatus)
       } catch { /* next polling cycle retries transient errors */ }
     }
   }

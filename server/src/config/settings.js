@@ -22,11 +22,10 @@ export const settings = Object.freeze({
     baseUrl: process.env.BITNOB_BASE_URL ?? 'https://api.bitnob.com',
     webhookSecret: process.env.BITNOB_WEBHOOK_SECRET ?? '',
   }),
-  bitnobPaymentsEnabled: process.env.BITNOB_PAYMENTS_ENABLED === 'true',
   apiKey: process.env.API_KEY ?? '',
   allowedOrigins: csv(process.env.ALLOWED_ORIGINS),
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? '',
-  payoutSenderName: process.env.PAYOUT_SENDER_NAME ?? 'PayBridge Africa',
+  payoutSenderName: process.env.PAYOUT_SENDER_NAME ?? '',
 })
 
 export const hasBitnobCredentials = (config = settings) => Boolean(config.bitnob?.clientId && config.bitnob?.clientSecret)
