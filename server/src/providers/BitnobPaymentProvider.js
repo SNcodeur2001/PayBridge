@@ -4,6 +4,11 @@ import { createReference, digitsOnly, publicCallbackUrl } from '../core/utils.js
 
 const ASSETS_BY_CURRENCY = Object.freeze({ USD: 'USDT', USDT: 'USDT', USDC: 'USDC', BTC: 'BTC' })
 const CHAIN_ALIASES = Object.freeze({ BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', MATIC: 'polygon' })
+const ASSETS_BY_CHAIN = Object.freeze({
+  bitcoin: ['BTC'], ethereum: ['USDT', 'USDC'], optimism: ['USDT', 'USDC'],
+  polygon: ['USDT', 'USDC'], base: ['USDC'], solana: ['USDT', 'USDC'],
+  stellar: ['USDC'], avalanche: ['USDT', 'USDC'], tron: ['USDT', 'USDC'],
+})
 
 function unwrapEntity(value, key) { return value?.[key] ?? value }
 function parseDestination(value) {
@@ -20,6 +25,13 @@ function mapPayoutStatus(status = '') {
   if (['COMPLETED', 'SUCCESS'].includes(value)) return 'completed'
   if (['FAILED', 'EXPIRED'].includes(value)) return 'failed'
   if (['INITIATED', 'PENDING', 'PROCESSING', 'FUNDED'].includes(value)) return 'processing'
+  return 'pending'
+}
+function mapTransactionStatus(status = '') {
+  const value = String(status).toUpperCase()
+  if (['SETTLED', 'COMPLETED', 'SUCCESS'].includes(value)) return 'completed'
+  if (['FAILED', 'EXPIRED', 'REVERSED'].includes(value)) return 'failed'
+  if (['PENDING', 'IN_PROGRESS', 'PROCESSING', 'INITIATED'].includes(value)) return 'processing'
   return 'pending'
 }
 function mapPayout(payout = {}) {
@@ -53,18 +65,121 @@ export class BitnobPaymentProvider {
 
   async getWallet() {
     const data = await this.client.request('GET', '/api/balances')
-    const accounts = Array.isArray(data?.accounts) ? data.accounts : []
+    const accounts = Array.isArray(data?.accounts) ? data.accounts : Array.isArray(data) ? data : []
     const wallets = accounts.map((item) => {
       const currency = String(item.currency ?? '').toUpperCase()
-      const rawBalance = Number(item.ledger_balance)
+      const rawBalance = Number(item.available_balance ?? item.ledger_balance ?? item.balance)
       const decimals = ['BTC'].includes(currency) ? 8 : ['USDT', 'USDC'].includes(currency) ? 6 : 0
-      const balance = item.ledger_balance_formatted
-        ? toNumber(item.ledger_balance_formatted)
+      const formatted = item.available_balance_formatted ?? item.ledger_balance_formatted ?? item.balance_formatted
+      const balance = formatted
+        ? toNumber(formatted)
         : Number.isFinite(rawBalance) ? rawBalance / (10 ** decimals) : 0
-      return { currency, balance, label: item.ledger_balance_formatted ?? currency }
+      return { currency, balance, label: formatted ?? currency }
     }).filter((item) => item.currency)
+    if (wallets.length && wallets.every((wallet) => wallet.balance === 0)) {
+      try {
+        const history = await this.client.request('GET', '/api/transactions', { limit: 100 })
+        const transactions = Array.isArray(history?.transactions) ? history.transactions : []
+        for (const transaction of transactions) {
+          if (transaction.side !== 'Credit' && !String(transaction.type ?? '').startsWith('DEPOSIT')) continue
+          const currency = String(transaction.currency ?? '').toUpperCase()
+          const wallet = wallets.find((item) => item.currency === currency)
+          if (wallet) wallet.balance += Math.abs(toNumber(transaction.amount_formatted, Number(transaction.amount) / (10 ** (currency === 'BTC' ? 8 : ['USDT', 'USDC'].includes(currency) ? 6 : 2))))
+        }
+      } catch { /* balance remains the authoritative first response when history is unavailable */ }
+    }
     const usdWallet = wallets.find((item) => ['USDT', 'USDC', 'USD'].includes(item.currency))
     return { balance: usdWallet?.balance ?? 0, currency: 'USD', wallets }
+  }
+
+  async getDeposits() {
+    let cursor
+    let transactions = []
+    for (let page = 0; page < 10; page += 1) {
+      const data = await this.client.request('GET', '/api/transactions', { limit: 100, ...(cursor ? { cursor } : {}) })
+      transactions = transactions.concat(Array.isArray(data?.transactions) ? data.transactions : Array.isArray(data) ? data : [])
+      if (!data?.has_more || !data?.next_cursor) break
+      cursor = data.next_cursor
+    }
+    return transactions.filter((item) => item.side === 'Credit' || Number(item.amount) > 0 || String(item.type ?? '').startsWith('DEPOSIT'))
+      .map((item) => {
+        const metadata = typeof item.metadata === 'string' ? parseDestination(item.metadata) : item.metadata ?? {}
+        return {
+          id: String(item.transaction_id ?? item.id ?? item.reference ?? ''),
+          reference: item.reference ?? null, direction: 'in',
+          amount: toNumber(item.amount_formatted ?? item.original_amount_formatted, Number(item.amount) / (10 ** (['BTC'].includes(String(item.currency).toUpperCase()) ? 8 : ['USDC', 'USDT'].includes(String(item.currency).toUpperCase()) ? 6 : 2))),
+          currency: String(item.currency ?? '').toUpperCase(),
+          status: mapTransactionStatus(item.state), type: item.type ?? 'DEPOSIT',
+          chain: metadata.chain ?? null, address: metadata.address ?? null,
+          txHash: metadata.tx_hash ?? null, source: 'bitnob',
+          createdAt: item.created_at ?? null,
+        }
+      })
+  }
+
+  async getDepositAddresses() {
+    const data = await this.client.request('GET', '/api/addresses')
+    const addresses = Array.isArray(data?.addresses) ? data.addresses : Array.isArray(data) ? data : []
+    return addresses.map((item) => ({ id: item.id ?? null, chain: String(item.chain ?? '').toLowerCase(), address: item.address ?? '', label: item.label ?? item.description ?? null }))
+      .filter((item) => item.chain && item.address)
+  }
+
+  async listCustomers(params = {}) { return this.client.request('GET', '/api/customers', params) }
+  async createCustomer(customer) { return this.client.request('POST', '/api/customers', customer) }
+  async getSupportedVirtualAccountCurrencies() { return this.client.request('GET', '/api/virtual-accounts/supported-currencies') }
+  async listVirtualAccounts(params = {}) { return this.client.request('GET', '/api/virtual-accounts', params) }
+  async createVirtualAccount(input) { return this.client.request('POST', '/api/virtual-accounts', input) }
+  async getVirtualAccount(id) { return this.client.request('GET', `/api/virtual-accounts/${encodeURIComponent(id)}`) }
+  async getVirtualAccountTransactions(id, params = {}) { return this.client.request('GET', `/api/virtual-accounts/${encodeURIComponent(id)}/transactions`, params) }
+  async updateVirtualAccountAlias(id, alias) { return this.client.request('PATCH', `/api/virtual-accounts/${encodeURIComponent(id)}/alias`, { account_alias: alias }) }
+  async simulateVirtualAccountDeposit(id) { return this.client.request('POST', `/api/virtual-accounts/${encodeURIComponent(id)}/simulate-deposit`) }
+
+  async simulatePayoutDeposit(quoteId, amount) {
+    return this.client.request('POST', `/api/payouts/quotes/${encodeURIComponent(quoteId)}/deposits`, { amount: String(amount) })
+  }
+
+  async submitCryptoTransfer({ transfer, channel, sourceCurrency }) {
+    const address = String(channel.account ?? channel.address ?? '').trim()
+    const asset = String(channel.asset ?? sourceCurrency).toUpperCase()
+    const chain = this.#normalizeChain(channel.chain ?? (asset === 'BTC' ? 'bitcoin' : 'ethereum'))
+    if (!address) throw new AppError(400, 'Adresse crypto manquante.')
+    if (!['BTC', 'USDT', 'USDC'].includes(asset)) throw new AppError(400, `Actif crypto non supporté : ${asset}`)
+    if (!ASSETS_BY_CHAIN[chain]?.includes(asset)) throw new AppError(400, `L’actif ${asset} n’est pas pris en charge sur le réseau ${chain}.`)
+
+    const conversion = await this.client.request('GET', '/api/exchange-rates/convert', {
+      from: String(sourceCurrency).toUpperCase(), to: asset, amount: Number(transfer.amount),
+    })
+    const majorAmount = Number(conversion.to_amount)
+    const decimals = asset === 'BTC' ? 8 : 6
+    const minorAmount = Math.round(majorAmount * (10 ** decimals))
+    if (!Number.isSafeInteger(minorAmount) || minorAmount <= 0) throw new AppError(400, 'Montant converti invalide pour le retrait crypto.')
+
+    const data = await this.createCryptoWithdrawal({
+      address, amount: minorAmount, currency: asset, chain,
+      reference: transfer.reference,
+      description: `PayBridge — ${transfer.beneficiaryName}`,
+      memo: channel.memo,
+    })
+    const withdrawal = unwrapEntity(data, 'withdrawal')
+    return {
+      providerRef: withdrawal.transaction_id ?? withdrawal.id ?? null,
+      amount: majorAmount, currency: asset,
+      fee: toNumber(withdrawal.fee_formatted ?? withdrawal.fee),
+      status: mapTransactionStatus(withdrawal.state ?? withdrawal.status),
+    }
+  }
+
+  async getTransaction(reference) {
+    const data = await this.client.request('GET', `/api/transactions/${encodeURIComponent(reference)}`)
+    const transaction = unwrapEntity(data, 'transaction')
+    return { ...transaction, status: mapTransactionStatus(transaction.state ?? transaction.status) }
+  }
+
+  async createCryptoWithdrawal({ address, amount, currency, chain, reference, description, memo }) {
+    return this.client.request('POST', '/api/withdrawals', {
+      to_address: address, amount: String(amount), currency, chain, reference,
+      ...(description ? { description } : {}), ...(memo ? { memo } : {}),
+    })
   }
 
   async getRates() {
@@ -94,14 +209,16 @@ export class BitnobPaymentProvider {
     return { accountName: data?.account_name ?? null, accountNumber: data?.account_number ?? accountNumber, bankCode: data?.bank_code ?? bankCode, bankName: data?.bank_name ?? null, country: data?.country ?? country, isVerified: data?.is_verified ?? false }
   }
 
-  async createQuote({ amount, sendCurrency = 'USD', toCountry, receiveCurrency, reference, paymentReason = 'family_support' }) {
+  async createQuote({ amount, sendCurrency = 'USD', toCountry, receiveCurrency, reference, paymentReason = 'family_support', fundingMode = 'offchain' }) {
     const fromAsset = ASSETS_BY_CURRENCY[sendCurrency]
     if (!fromAsset) throw new AppError(400, `Bitnob ne prend pas en charge la devise source ${sendCurrency} pour les payouts. Utilise USD, USDT, USDC ou BTC.`)
     const payoutReference = reference ?? createReference('PBQT')
     const data = await this.client.request('POST', '/api/payouts/quotes', {
       amount: String(amount), country: toCountry, from_asset: fromAsset,
       to_currency: receiveCurrency ?? CURRENCIES[toCountry] ?? toCountry,
-      source: 'offchain', payment_reason: paymentReason, reference: payoutReference,
+      source: fundingMode === 'onchain' ? 'onchain' : 'offchain',
+      ...(fundingMode === 'onchain' ? { chain: fromAsset === 'BTC' ? 'bitcoin' : 'polygon' } : {}),
+      payment_reason: paymentReason, reference: payoutReference,
     })
     const payout = unwrapEntity(data, 'payout')
     return {
@@ -115,7 +232,7 @@ export class BitnobPaymentProvider {
   async submitPayout(transfer, quote, beneficiary) {
     const isMobile = beneficiary.method === 'mobile'
     const provider = String(beneficiary.provider ?? '').toUpperCase()
-    const network = beneficiary.network ?? MOBILE_NETWORK_CODES[provider] ?? provider.replace(/\s+/g, '_')
+    const network = String(beneficiary.network ?? MOBILE_NETWORK_CODES[provider] ?? provider.replace(/\s+/g, '_')).toLowerCase()
     const callbackUrl = this.#callbackUrl()
     const destination = {
       destination_type: isMobile ? 'mobile_money' : 'bank',
@@ -123,6 +240,9 @@ export class BitnobPaymentProvider {
       account_name: beneficiary.accountName ?? beneficiary.name,
       account_number: digitsOnly(beneficiary.account),
       ...(isMobile ? { network } : { bank_code: beneficiary.bankCode }),
+      ...(isMobile && ['SN', 'CI'].includes(String(transfer.toCountry).toUpperCase())
+        ? { sender: { account_name: this.settings.payoutSenderName ?? 'PayBridge Africa', country: transfer.fromCountry ?? 'SN' } }
+        : {}),
     }
     await this.client.request('POST', `/api/payouts/${encodeURIComponent(quote.quoteId)}/initialize`, {
       quote_id: quote.quoteId, reference: transfer.reference,
@@ -157,7 +277,13 @@ export class BitnobPaymentProvider {
 
   async createBeneficiary(input) {
     if (input.method === 'crypto') {
-      throw new AppError(400, 'La route bénéficiaire actuelle accepte les destinations bancaires ou mobile money, pas les wallets crypto.')
+      const data = await this.client.request('POST', '/api/beneficiaries', {
+        name: String(input.name).trim(), type: 'crypto',
+        wallet_address: String(input.account ?? input.walletAddress).trim(),
+        currency: String(input.asset ?? input.currency ?? 'USDT').toUpperCase(),
+        network: this.#normalizeChain(input.chain ?? input.network ?? 'ethereum'),
+      })
+      return this.#mapBeneficiary(unwrapEntity(data, 'beneficiary'))
     }
     const destination = {
       account_name: input.accountName ?? input.name,
@@ -175,6 +301,15 @@ export class BitnobPaymentProvider {
 
   async updateBeneficiary(id, changes, existing) {
     const current = existing ?? await this.getBeneficiary(id)
+    if (current.method === 'crypto') {
+      const data = await this.client.request('PUT', `/api/beneficiaries/${encodeURIComponent(id)}`, {
+        ...(changes.name !== undefined ? { name: String(changes.name).trim() } : {}),
+        ...(changes.account !== undefined ? { wallet_address: String(changes.account).trim() } : {}),
+        ...(changes.asset !== undefined ? { currency: String(changes.asset).toUpperCase() } : {}),
+        ...(changes.chain !== undefined ? { network: this.#normalizeChain(changes.chain) } : {}),
+      })
+      return this.#mapBeneficiary(unwrapEntity(data, 'beneficiary'))
+    }
     const destination = {
       account_name: changes.accountName ?? changes.name ?? current.name,
       account_number: changes.account ?? current.account,
@@ -247,6 +382,8 @@ export class BitnobPaymentProvider {
       method: destination.destination_type === 'mobile_money' ? 'mobile' : record.type === 'crypto' ? 'crypto' : 'bank',
       provider: destination.network ?? destination.bank_name ?? destination.bank_code ?? '',
       network: destination.network, account: destination.account_number ?? record.wallet_address ?? '',
+      asset: String(record.currency ?? destination.currency ?? '').toUpperCase(),
+      chain: record.network ?? destination.network ?? null,
       bankCode: destination.bank_code, isActive: record.is_active ?? true,
       isBlacklisted: record.is_blacklisted ?? false,
     }
