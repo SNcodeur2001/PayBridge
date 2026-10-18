@@ -31,9 +31,7 @@ export function createApp({ repository = new JsonFileRepository(), provider, con
   app.use((req, _res, next) => next(new AppError(404, `Route inconnue : ${req.method} ${req.path}`)))
   app.use(errorHandler)
 
-  if (paymentProvider.isLive) {
-    const poller = setInterval(() => paymentService.refreshPendingTransfers(), 20_000)
-    poller.unref()
-  }
+  const poller = setInterval(() => paymentService.refreshPendingTransfers(), 20_000)
+  poller.unref()
   return app
 }

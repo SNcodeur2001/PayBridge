@@ -1,8 +1,9 @@
 import { AppError } from '../core/AppError.js'
-import { CURRENCIES, MOBILE_NETWORK_CODES } from '../config/paybridge.js'
+import { MOBILE_NETWORK_CODES } from '../config/paybridge.js'
 import { createReference, digitsOnly, publicCallbackUrl } from '../core/utils.js'
 
 const ASSETS_BY_CURRENCY = Object.freeze({ USD: 'USDT', USDT: 'USDT', USDC: 'USDC', BTC: 'BTC' })
+const TRANSACTION_DECIMALS = Object.freeze({ BTC: 8, USDT: 6, USDC: 6, NGN: 2 })
 const CHAIN_ALIASES = Object.freeze({ BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', MATIC: 'polygon' })
 const ASSETS_BY_CHAIN = Object.freeze({
   bitcoin: ['BTC'], ethereum: ['USDT', 'USDC'], optimism: ['USDT', 'USDC'],
@@ -12,43 +13,58 @@ const ASSETS_BY_CHAIN = Object.freeze({
 
 function unwrapEntity(value, key) { return value?.[key] ?? value }
 function parseDestination(value) {
-  if (!value) return {}
+  if (value === null || value === undefined || value === '') return {}
   if (typeof value === 'object') return value
-  try { return JSON.parse(value) } catch { return {} }
+  try { return JSON.parse(value) } catch { throw new AppError(502, 'Réponse Bitnob invalide : destination bénéficiaire illisible.') }
 }
-function toNumber(value, fallback = 0) {
+function toNumber(value) {
   const number = Number.parseFloat(String(value ?? '').replace(/[^\d.-]/g, ''))
-  return Number.isFinite(number) ? number : fallback
+  return Number.isFinite(number) ? number : null
 }
 function mapPayoutStatus(status = '') {
   const value = String(status).toUpperCase()
   if (['COMPLETED', 'SUCCESS'].includes(value)) return 'completed'
   if (['FAILED', 'EXPIRED'].includes(value)) return 'failed'
   if (['INITIATED', 'PENDING', 'PROCESSING', 'FUNDED'].includes(value)) return 'processing'
-  return 'pending'
+  return String(status || '').toLowerCase() || null
 }
 function mapTransactionStatus(status = '') {
   const value = String(status).toUpperCase()
   if (['SETTLED', 'COMPLETED', 'SUCCESS'].includes(value)) return 'completed'
   if (['FAILED', 'EXPIRED', 'REVERSED'].includes(value)) return 'failed'
   if (['PENDING', 'IN_PROGRESS', 'PROCESSING', 'INITIATED'].includes(value)) return 'processing'
-  return 'pending'
+  return String(status || '').toLowerCase() || null
+}
+function displayTransactionAmount(transaction) {
+  if (transaction.amount_formatted) {
+    const amount = toNumber(transaction.amount_formatted)
+    if (amount === null) throw new AppError(502, 'Réponse Bitnob invalide : amount_formatted illisible.')
+    return amount
+  }
+  const currency = String(transaction.currency ?? '').toUpperCase()
+  const decimals = TRANSACTION_DECIMALS[currency]
+  if (decimals === undefined || !/^-?\d+$/.test(String(transaction.amount ?? ''))) {
+    throw new AppError(502, `Réponse Bitnob invalide : montant de transaction invalide (${currency}).`)
+  }
+  return Number(transaction.amount) / (10 ** decimals)
 }
 function mapPayout(payout = {}) {
   const beneficiary = payout.beneficiary ?? {}
   return {
-    id: payout.reference ?? payout.id, reference: payout.reference ?? payout.id,
+    ...payout,
+    bitnob: payout,
+    id: payout.id, reference: payout.reference,
     createdAt: payout.created_at ?? null, updatedAt: payout.updated_at ?? null,
     beneficiaryId: beneficiary.id ?? null, beneficiaryName: beneficiary.account_name ?? null,
-    fromCountry: 'API', toCountry: payout.country ?? beneficiary.country ?? '',
+    fromCountry: payout.sender?.country ?? null, toCountry: payout.country ?? beneficiary.country ?? null,
     sendCurrency: String(payout.from_asset ?? '').toUpperCase(),
     receiveCurrency: String(payout.to_currency ?? '').toUpperCase(),
     amount: toNumber(payout.amount), fee: toNumber(payout.fees),
     rate: toNumber(payout.exchange_rate?.effective_rate ?? payout.exchange_rate?.rate),
     received: toNumber(payout.settlement_amount),
-    method: beneficiary.destination_type === 'mobile_money' ? 'mobile' : 'bank',
-    paymentReason: payout.payment_reason ?? '', provider: 'bitnob',
-    status: mapPayoutStatus(payout.status), demo: false,
+    method: beneficiary.destination_type === 'mobile_money' ? 'mobile' : beneficiary.destination_type === 'bank' ? 'bank' : undefined,
+    paymentReason: payout.payment_reason ?? null, provider: 'bitnob',
+    status: mapPayoutStatus(payout.status), bitnobStatus: payout.status, source: 'bitnob',
   }
 }
 
@@ -58,70 +74,168 @@ export class BitnobPaymentProvider {
     this.client = client
     this.settings = settings
     this.mode = 'bitnob'
-    this.isLive = true
   }
 
   async getHealth() { return { ok: true, mode: this.mode, time: new Date().toISOString() } }
 
   async getWallet() {
     const data = await this.client.request('GET', '/api/balances')
-    const accounts = Array.isArray(data?.accounts) ? data.accounts : Array.isArray(data) ? data : []
-    const wallets = accounts.map((item) => {
-      const currency = String(item.currency ?? '').toUpperCase()
-      const rawBalance = Number(item.available_balance ?? item.ledger_balance ?? item.balance)
-      const decimals = ['BTC'].includes(currency) ? 8 : ['USDT', 'USDC'].includes(currency) ? 6 : 0
-      const formatted = item.available_balance_formatted ?? item.ledger_balance_formatted ?? item.balance_formatted
-      const balance = formatted
-        ? toNumber(formatted)
-        : Number.isFinite(rawBalance) ? rawBalance / (10 ** decimals) : 0
-      return { currency, balance, label: formatted ?? currency }
-    }).filter((item) => item.currency)
-    if (wallets.length && wallets.every((wallet) => wallet.balance === 0)) {
-      try {
-        const history = await this.client.request('GET', '/api/transactions', { limit: 100 })
-        const transactions = Array.isArray(history?.transactions) ? history.transactions : []
-        for (const transaction of transactions) {
-          if (transaction.side !== 'Credit' && !String(transaction.type ?? '').startsWith('DEPOSIT')) continue
-          const currency = String(transaction.currency ?? '').toUpperCase()
-          const wallet = wallets.find((item) => item.currency === currency)
-          if (wallet) wallet.balance += Math.abs(toNumber(transaction.amount_formatted, Number(transaction.amount) / (10 ** (currency === 'BTC' ? 8 : ['USDT', 'USDC'].includes(currency) ? 6 : 2))))
-        }
-      } catch { /* balance remains the authoritative first response when history is unavailable */ }
+    if (!Array.isArray(data?.accounts)) {
+      throw new AppError(502, 'Réponse Bitnob invalide : la liste accounts est absente.')
     }
+
+    const wallets = data.accounts.map((item) => {
+      if (!item || typeof item !== 'object') {
+        throw new AppError(502, 'Réponse Bitnob invalide : un compte de portefeuille est mal formé.')
+      }
+
+      const currency = String(item.currency ?? '').toUpperCase()
+      const rawBalance = item.available_balance
+      const formattedBalance = item.available_balance_formatted
+
+      if (!currency) throw new AppError(502, 'Réponse Bitnob invalide : devise du portefeuille absente.')
+      if (rawBalance === undefined || rawBalance === null || !Number.isFinite(Number(rawBalance))) {
+        throw new AppError(502, `Réponse Bitnob invalide : available_balance absent ou invalide pour ${currency}.`)
+      }
+      if (typeof formattedBalance !== 'string' || !formattedBalance.trim()) {
+        throw new AppError(502, `Réponse Bitnob invalide : available_balance_formatted absent pour ${currency}.`)
+      }
+      const balance = toNumber(formattedBalance)
+      if (balance === null) throw new AppError(502, `Réponse Bitnob invalide : available_balance_formatted illisible pour ${currency}.`)
+
+      return { ...item, currency, balance, label: formattedBalance }
+    })
+
     const usdWallet = wallets.find((item) => ['USDT', 'USDC', 'USD'].includes(item.currency))
-    return { balance: usdWallet?.balance ?? 0, currency: 'USD', wallets }
+    return { ...(usdWallet ? { balance: usdWallet.balance, currency: usdWallet.currency } : {}), wallets }
   }
 
   async getDeposits() {
+    const transactions = await this.#listTransactions()
+    const onChainDeposits = transactions.filter((item) => item.side === 'Credit' || String(item.type ?? '').startsWith('DEPOSIT'))
+      .map((item) => {
+        const metadata = typeof item.metadata === 'string' ? parseDestination(item.metadata) : item.metadata ?? {}
+        const currency = String(item.currency ?? '').toUpperCase()
+        const id = item.transaction_id ?? item.id ?? item.reference
+        if (!id) throw new AppError(502, 'Réponse Bitnob invalide : identifiant de dépôt absent.')
+        return {
+          ...item,
+          bitnob: item,
+          id: String(id), reference: item.reference, direction: 'in', amount: displayTransactionAmount(item), currency,
+          status: mapTransactionStatus(item.state), type: item.type,
+          chain: metadata.chain, address: metadata.address,
+          txHash: metadata.tx_hash, source: 'bitnob', createdAt: item.created_at,
+        }
+      })
+    const virtualAccountDeposits = await this.getVirtualAccountDeposits()
+    const uniqueDeposits = new Map()
+    for (const deposit of [...onChainDeposits, ...virtualAccountDeposits]) {
+      uniqueDeposits.set(deposit.id, deposit)
+    }
+    return [...uniqueDeposits.values()].sort((left, right) => new Date(right.created_at ?? right.createdAt ?? 0) - new Date(left.created_at ?? left.createdAt ?? 0))
+  }
+
+  async getVirtualAccountDeposits() {
+    const accounts = []
+    for (let page = 1; page <= 100; page += 1) {
+      const data = await this.client.request('GET', '/api/virtual-accounts', { page, page_size: 100 })
+      if (!Array.isArray(data?.virtual_accounts) || !data?.page_info) {
+        throw new AppError(502, 'Réponse Bitnob invalide : virtual_accounts ou page_info absent.')
+      }
+      accounts.push(...data.virtual_accounts)
+      if (!data.page_info.has_next_page) break
+      if (page === 100) throw new AppError(502, 'Liste des comptes virtuels Bitnob trop volumineuse pour être récupérée en une requête.')
+    }
+    const deposits = await Promise.all(accounts.map(async (account) => {
+      const transactions = []
+      let offset = 0
+      for (let page = 0; page < 100; page += 1) {
+        const result = await this.getVirtualAccountTransactions(account.id, { limit: 100, offset })
+        if (!Array.isArray(result?.transactions) || !Number.isFinite(Number(result.total))) {
+          throw new AppError(502, `Réponse Bitnob invalide : transactions ou total absent pour le compte virtuel ${account.id}.`)
+        }
+        transactions.push(...result.transactions)
+        if (transactions.length >= Number(result.total)) break
+        offset += result.transactions.length
+        if (!result.transactions.length || page === 99) {
+          throw new AppError(502, `Pagination Bitnob incomplète pour le compte virtuel ${account.id}.`)
+        }
+      }
+      return transactions.map((transaction) => {
+        if (!/^\d+$/.test(String(transaction.amount ?? ''))) {
+          throw new AppError(502, `Réponse Bitnob invalide : montant de dépôt NGN invalide pour ${account.id}.`)
+        }
+        return {
+          ...transaction,
+          bitnob: transaction,
+          amountMinor: transaction.amount,
+          amount: Number(transaction.amount) / 100,
+          account_id: transaction.virtual_account_id,
+          source: 'bitnob',
+        }
+      })
+    }))
+    return deposits.flat()
+  }
+
+  async listTransfers(params = {}) {
+    const [payouts, transactionData] = await Promise.all([
+      this.listPayouts(params),
+      this.#listTransactions(params),
+    ])
+    const payoutReferences = new Set(payouts.map((payout) => payout.reference))
+    const withdrawals = transactionData.filter((item) => {
+      const side = String(item.side ?? item.direction ?? '').toLowerCase()
+      const type = String(item.type ?? '').toUpperCase()
+      const outgoing = ['debit', 'out', 'outbound'].includes(side) || /WITHDRAWAL|PAYOUT|LIGHTNING/.test(type)
+      return outgoing && !payoutReferences.has(item.reference)
+    }).map((item) => ({
+      ...item,
+      bitnob: item,
+      id: item.reference ?? item.transaction_id ?? item.id,
+      amount: displayTransactionAmount(item),
+      currency: String(item.currency ?? '').toUpperCase(),
+      status: mapTransactionStatus(item.state ?? item.status),
+      source: 'bitnob',
+    }))
+    return [...payouts, ...withdrawals].sort((left, right) => new Date(right.createdAt ?? right.created_at ?? 0) - new Date(left.createdAt ?? left.created_at ?? 0))
+  }
+
+  async getTransfer(reference) {
+    if (/^PB(?:CR|LN)-/i.test(reference)) return this.getTransaction(reference)
+    if (/^PB-/i.test(reference)) return this.getPayoutStatus(reference)
+    const data = await this.client.request('GET', `/api/payouts/${encodeURIComponent(reference)}`)
+    return mapPayout(unwrapEntity(data, 'payout'))
+  }
+
+  async #listTransactions(params = {}) {
     let cursor
     let transactions = []
     for (let page = 0; page < 10; page += 1) {
-      const data = await this.client.request('GET', '/api/transactions', { limit: 100, ...(cursor ? { cursor } : {}) })
-      transactions = transactions.concat(Array.isArray(data?.transactions) ? data.transactions : Array.isArray(data) ? data : [])
-      if (!data?.has_more || !data?.next_cursor) break
+      const data = await this.client.request('GET', '/api/transactions', { limit: params.limit ?? 100, ...(cursor ? { cursor } : {}) })
+      if (!Array.isArray(data?.transactions)) throw new AppError(502, 'Réponse Bitnob invalide : transactions absentes.')
+      transactions = transactions.concat(data.transactions)
+      if (!data.has_more) break
+      if (!data.next_cursor) throw new AppError(502, 'Réponse Bitnob invalide : curseur de pagination absent.')
       cursor = data.next_cursor
     }
-    return transactions.filter((item) => item.side === 'Credit' || Number(item.amount) > 0 || String(item.type ?? '').startsWith('DEPOSIT'))
-      .map((item) => {
-        const metadata = typeof item.metadata === 'string' ? parseDestination(item.metadata) : item.metadata ?? {}
-        return {
-          id: String(item.transaction_id ?? item.id ?? item.reference ?? ''),
-          reference: item.reference ?? null, direction: 'in',
-          amount: toNumber(item.amount_formatted ?? item.original_amount_formatted, Number(item.amount) / (10 ** (['BTC'].includes(String(item.currency).toUpperCase()) ? 8 : ['USDC', 'USDT'].includes(String(item.currency).toUpperCase()) ? 6 : 2))),
-          currency: String(item.currency ?? '').toUpperCase(),
-          status: mapTransactionStatus(item.state), type: item.type ?? 'DEPOSIT',
-          chain: metadata.chain ?? null, address: metadata.address ?? null,
-          txHash: metadata.tx_hash ?? null, source: 'bitnob',
-          createdAt: item.created_at ?? null,
-        }
-      })
+    if (cursor) throw new AppError(502, 'Historique Bitnob trop volumineux : pagination incomplète après 10 pages.')
+    return transactions
   }
 
   async getDepositAddresses() {
-    const data = await this.client.request('GET', '/api/addresses')
-    const addresses = Array.isArray(data?.addresses) ? data.addresses : Array.isArray(data) ? data : []
-    return addresses.map((item) => ({ id: item.id ?? null, chain: String(item.chain ?? '').toLowerCase(), address: item.address ?? '', label: item.label ?? item.description ?? null }))
-      .filter((item) => item.chain && item.address)
+    let cursor
+    const addresses = []
+    for (let page = 0; page < 10; page += 1) {
+      const data = await this.client.request('GET', '/api/addresses', { limit: 100, ...(cursor ? { cursor } : {}) })
+      if (!Array.isArray(data?.addresses)) throw new AppError(502, 'Réponse Bitnob invalide : addresses absent.')
+      addresses.push(...data.addresses.map((item) => ({ ...item, chain: String(item.chain).toLowerCase() })))
+      if (!data.has_more) break
+      if (!data.next_cursor) throw new AppError(502, 'Réponse Bitnob invalide : curseur de pagination des adresses absent.')
+      cursor = data.next_cursor
+    }
+    if (cursor) throw new AppError(502, 'Liste des adresses Bitnob trop volumineuse : pagination incomplète après 10 pages.')
+    return addresses
   }
 
   async listCustomers(params = {}) { return this.client.request('GET', '/api/customers', params) }
@@ -132,16 +246,12 @@ export class BitnobPaymentProvider {
   async getVirtualAccount(id) { return this.client.request('GET', `/api/virtual-accounts/${encodeURIComponent(id)}`) }
   async getVirtualAccountTransactions(id, params = {}) { return this.client.request('GET', `/api/virtual-accounts/${encodeURIComponent(id)}/transactions`, params) }
   async updateVirtualAccountAlias(id, alias) { return this.client.request('PATCH', `/api/virtual-accounts/${encodeURIComponent(id)}/alias`, { account_alias: alias }) }
-  async simulateVirtualAccountDeposit(id) { return this.client.request('POST', `/api/virtual-accounts/${encodeURIComponent(id)}/simulate-deposit`) }
-
-  async simulatePayoutDeposit(quoteId, amount) {
-    return this.client.request('POST', `/api/payouts/quotes/${encodeURIComponent(quoteId)}/deposits`, { amount: String(amount) })
-  }
-
   async submitCryptoTransfer({ transfer, channel, sourceCurrency }) {
     const address = String(channel.account ?? channel.address ?? '').trim()
-    const asset = String(channel.asset ?? sourceCurrency).toUpperCase()
-    const chain = this.#normalizeChain(channel.chain ?? (asset === 'BTC' ? 'bitcoin' : 'ethereum'))
+    const asset = String(channel.asset ?? '').toUpperCase()
+    if (!channel.chain) throw new AppError(400, 'Réseau crypto requis.')
+    if (!asset) throw new AppError(400, 'Actif crypto requis.')
+    const chain = this.#normalizeChain(channel.chain)
     if (!address) throw new AppError(400, 'Adresse crypto manquante.')
     if (!['BTC', 'USDT', 'USDC'].includes(asset)) throw new AppError(400, `Actif crypto non supporté : ${asset}`)
     if (!ASSETS_BY_CHAIN[chain]?.includes(asset)) throw new AppError(400, `L’actif ${asset} n’est pas pris en charge sur le réseau ${chain}.`)
@@ -172,7 +282,7 @@ export class BitnobPaymentProvider {
   async getTransaction(reference) {
     const data = await this.client.request('GET', `/api/transactions/${encodeURIComponent(reference)}`)
     const transaction = unwrapEntity(data, 'transaction')
-    return { ...transaction, status: mapTransactionStatus(transaction.state ?? transaction.status) }
+    return { ...transaction, status: mapTransactionStatus(transaction.state ?? transaction.status), bitnobStatus: transaction.state ?? transaction.status }
   }
 
   async createCryptoWithdrawal({ address, amount, currency, chain, reference, description, memo }) {
@@ -184,55 +294,74 @@ export class BitnobPaymentProvider {
 
   async getRates() {
     const data = await this.client.request('GET', '/api/exchange-rates', { base: 'USD' })
-    const list = Array.isArray(data?.rates) ? data.rates : Array.isArray(data) ? data : []
-    const rates = { USD: 1 }
-    for (const item of list) {
+    if (!Array.isArray(data?.rates)) throw new AppError(502, 'Réponse Bitnob invalide : rates absent.')
+    const rates = {}
+    for (const item of data.rates) {
       const currency = String(item.target_currency ?? item.currency ?? '').toUpperCase()
-      const buy = Number(item.buy_rate)
-      const sell = Number(item.sell_rate)
-      const rate = Number(item.mid_rate ?? item.rate ?? (Number.isFinite(buy) && Number.isFinite(sell) ? (buy + sell) / 2 : NaN))
+      const rate = Number(item.mid_rate ?? item.rate)
       if (currency && Number.isFinite(rate)) rates[currency] = rate
     }
-    return { updatedAt: data?.timestamp ?? new Date().toISOString(), source: this.mode, rates }
+    return { updatedAt: data.timestamp, source: this.mode, rates, rateDetails: data.rates, skippedCurrencies: data.skipped_currencies }
   }
 
   async getBanks(country) {
     const data = await this.client.request('GET', `/api/payouts/banks/${encodeURIComponent(country)}`)
-    const list = Array.isArray(data?.banks) ? data.banks : Array.isArray(data) ? data : []
-    return { banks: list.map((item) => ({ code: String(item.bank_code ?? item.code ?? ''), name: String(item.bank_name ?? item.name ?? '') })).filter((item) => item.code && item.name) }
+    const list = data?.banks
+    if (!Array.isArray(list)) throw new AppError(502, 'Réponse Bitnob invalide : banks absent.')
+    return { banks: list.map((item) => ({ ...item, code: item.bank_code ?? item.code, name: item.bank_name ?? item.name })) }
+  }
+
+  async getSupportedPayoutCountries() {
+    const data = await this.client.request('GET', '/api/payouts/supported-countries')
+    if (!Array.isArray(data?.countries)) throw new AppError(502, 'Réponse Bitnob invalide : countries absent.')
+    return data
+  }
+
+  async getPayoutCountryDetails(country) {
+    return this.client.request('GET', `/api/payouts/supported-countries/${encodeURIComponent(country)}`)
   }
 
   async lookupAccount({ country, accountNumber, bankCode, method }) {
     const params = { country, bank_code: bankCode, account_number: digitsOnly(accountNumber) }
     if (method === 'mobile') params.type = 'mobile_money'
     const data = await this.client.request('GET', '/api/payouts/account-lookup', params)
-    return { accountName: data?.account_name ?? null, accountNumber: data?.account_number ?? accountNumber, bankCode: data?.bank_code ?? bankCode, bankName: data?.bank_name ?? null, country: data?.country ?? country, isVerified: data?.is_verified ?? false }
+    return {
+      ...data,
+      ...(data?.account_name !== undefined ? { accountName: data.account_name } : {}),
+      ...(data?.account_number !== undefined ? { accountNumber: data.account_number } : {}),
+      ...(data?.bank_code !== undefined ? { bankCode: data.bank_code } : {}),
+      ...(data?.bank_name !== undefined ? { bankName: data.bank_name } : {}),
+      ...(data?.is_verified !== undefined ? { isVerified: data.is_verified } : {}),
+    }
   }
 
-  async createQuote({ amount, sendCurrency = 'USD', toCountry, receiveCurrency, reference, paymentReason = 'family_support', fundingMode = 'offchain' }) {
+  async createQuote({ amount, sendCurrency = 'USD', toCountry, receiveCurrency, reference, paymentReason = 'family_support', fundingMode = 'offchain', chain }) {
     const fromAsset = ASSETS_BY_CURRENCY[sendCurrency]
     if (!fromAsset) throw new AppError(400, `Bitnob ne prend pas en charge la devise source ${sendCurrency} pour les payouts. Utilise USD, USDT, USDC ou BTC.`)
+    if (fundingMode === 'onchain' && !chain) throw new AppError(400, 'Le réseau de financement Bitnob est requis en mode on-chain.')
     const payoutReference = reference ?? createReference('PBQT')
     const data = await this.client.request('POST', '/api/payouts/quotes', {
       amount: String(amount), country: toCountry, from_asset: fromAsset,
-      to_currency: receiveCurrency ?? CURRENCIES[toCountry] ?? toCountry,
+      to_currency: receiveCurrency,
       source: fundingMode === 'onchain' ? 'onchain' : 'offchain',
-      ...(fundingMode === 'onchain' ? { chain: fromAsset === 'BTC' ? 'bitcoin' : 'polygon' } : {}),
+      ...(fundingMode === 'onchain' ? { chain: this.#normalizeChain(chain) } : {}),
       payment_reason: paymentReason, reference: payoutReference,
     })
     const payout = unwrapEntity(data, 'payout')
     return {
-      amount: toNumber(payout.amount, Number(amount)), fee: toNumber(payout.fees),
+      amount: toNumber(payout.amount), fee: toNumber(payout.fees),
       rate: toNumber(payout.exchange_rate?.effective_rate ?? payout.exchange_rate?.rate),
       received: toNumber(payout.settlement_amount), expiresAt: payout.expires_at,
-      quoteId: payout.quote_id, payoutId: payout.id, reference: payout.reference ?? payoutReference,
+      receiveCurrency: payout.to_currency, quoteId: payout.quote_id, payoutId: payout.id, reference: payout.reference,
+      bitnob: payout,
     }
   }
 
   async submitPayout(transfer, quote, beneficiary) {
     const isMobile = beneficiary.method === 'mobile'
     const provider = String(beneficiary.provider ?? '').toUpperCase()
-    const network = String(beneficiary.network ?? MOBILE_NETWORK_CODES[provider] ?? provider.replace(/\s+/g, '_')).toLowerCase()
+    const network = beneficiary.network ?? MOBILE_NETWORK_CODES[provider]
+    if (isMobile && !network) throw new AppError(400, 'Code réseau Bitnob requis pour ce bénéficiaire mobile money.')
     const callbackUrl = this.#callbackUrl()
     const destination = {
       destination_type: isMobile ? 'mobile_money' : 'bank',
@@ -240,8 +369,8 @@ export class BitnobPaymentProvider {
       account_name: beneficiary.accountName ?? beneficiary.name,
       account_number: digitsOnly(beneficiary.account),
       ...(isMobile ? { network } : { bank_code: beneficiary.bankCode }),
-      ...(isMobile && ['SN', 'CI'].includes(String(transfer.toCountry).toUpperCase())
-        ? { sender: { account_name: this.settings.payoutSenderName ?? 'PayBridge Africa', country: transfer.fromCountry ?? 'SN' } }
+      ...(isMobile && ['SN', 'CI'].includes(String(transfer.toCountry).toUpperCase()) && this.settings.payoutSenderName && transfer.fromCountry
+        ? { sender: { account_name: this.settings.payoutSenderName, country: transfer.fromCountry } }
         : {}),
     }
     await this.client.request('POST', `/api/payouts/${encodeURIComponent(quote.quoteId)}/initialize`, {
@@ -250,7 +379,8 @@ export class BitnobPaymentProvider {
       ...(callbackUrl ? { callback_url: callbackUrl } : {}),
       beneficiary: destination,
     })
-    return this.client.request('POST', `/api/payouts/${encodeURIComponent(quote.quoteId)}/finalize`)
+    const finalized = await this.client.request('POST', `/api/payouts/${encodeURIComponent(quote.quoteId)}/finalize`)
+    return mapPayout(unwrapEntity(finalized, 'payout'))
   }
 
   async getPayoutStatus(reference) {
@@ -258,15 +388,21 @@ export class BitnobPaymentProvider {
     return mapPayout(unwrapEntity(data, 'payout'))
   }
 
+  async getPayout(id) {
+    const data = await this.client.request('GET', `/api/payouts/${encodeURIComponent(id)}`)
+    return mapPayout(unwrapEntity(data, 'payout'))
+  }
+
   async listPayouts({ limit = 100, offset = 0 } = {}) {
     const data = await this.client.request('GET', '/api/payouts', { limit, offset })
-    const payouts = Array.isArray(data?.items) ? data.items : Array.isArray(data?.payouts) ? data.payouts : []
-    return payouts.map(mapPayout)
+    if (!Array.isArray(data?.items)) throw new AppError(502, 'Réponse Bitnob invalide : items des payouts absent.')
+    return data.items.map(mapPayout)
   }
 
   async listBeneficiaries() {
     const data = await this.client.request('GET', '/api/beneficiaries')
-    const list = Array.isArray(data?.beneficiaries) ? data.beneficiaries : Array.isArray(data) ? data : []
+    const list = data?.beneficiaries
+    if (!Array.isArray(list)) throw new AppError(502, 'Réponse Bitnob invalide : beneficiaries absent.')
     return list.map((beneficiary) => this.#mapBeneficiary(beneficiary))
   }
 
@@ -280,18 +416,20 @@ export class BitnobPaymentProvider {
       const data = await this.client.request('POST', '/api/beneficiaries', {
         name: String(input.name).trim(), type: 'crypto',
         wallet_address: String(input.account ?? input.walletAddress).trim(),
-        currency: String(input.asset ?? input.currency ?? 'USDT').toUpperCase(),
-        network: this.#normalizeChain(input.chain ?? input.network ?? 'ethereum'),
+        currency: String(input.asset ?? input.currency).toUpperCase(),
+        network: this.#normalizeChain(input.chain ?? input.network),
       })
       return this.#mapBeneficiary(unwrapEntity(data, 'beneficiary'))
     }
+    const mobileNetwork = input.network ?? MOBILE_NETWORK_CODES[String(input.provider ?? '').toUpperCase()]
+    if (input.method === 'mobile' && !mobileNetwork) throw new AppError(400, 'network est requis pour un bénéficiaire mobile money.')
     const destination = {
       account_name: input.accountName ?? input.name,
       account_number: String(input.account),
       bank_code: input.bankCode,
       country: String(input.country).toUpperCase(),
       destination_type: input.method === 'mobile' ? 'mobile_money' : 'bank',
-      ...(input.method === 'mobile' ? { network: input.network ?? MOBILE_NETWORK_CODES[String(input.provider ?? '').toUpperCase()] ?? input.provider } : {}),
+      ...(input.method === 'mobile' ? { network: mobileNetwork } : {}),
     }
     const data = await this.client.request('POST', '/api/beneficiaries', {
       name: String(input.name).trim(), type: 'bank', destination: JSON.stringify(destination),
@@ -329,9 +467,11 @@ export class BitnobPaymentProvider {
   async decodeLightningInvoice(request) {
     const data = await this.client.request('POST', '/api/lightning/decode', { request })
     return {
-      paymentHash: data.payment_hash ?? null,
-      amountSat: Number(data.amount_sat ?? 0), description: data.description ?? '',
-      expiresAt: this.#unixTimestamp(data.expires_at), isExpired: data.is_expired ?? false,
+      ...data,
+      paymentHash: data.payment_hash,
+      amountSat: Number(data.amount_sat),
+      expiresAt: this.#unixTimestamp(data.expires_at),
+      isExpired: data.is_expired,
     }
   }
 
@@ -343,26 +483,23 @@ export class BitnobPaymentProvider {
     if (!Number.isSafeInteger(amountSat) || amountSat < 1 || amountSat > 20_000_000) {
       throw new AppError(400, 'Le montant converti doit être compris entre 1 et 20 000 000 sats.')
     }
+    if (!description) throw new AppError(400, 'description est requis pour créer une facture Lightning Bitnob.')
     const data = await this.client.request('POST', '/api/lightning/invoices', {
-      amount: amountSat, description: description ?? 'PayBridge', reference: createReference('PBLN'),
+      amount: amountSat, description, reference: createReference('PBLN'),
     })
-    return { id: data.id, paymentRequest: data.request, amountSat: Number(data.amount_sat ?? amountSat), description: data.description ?? description, expiresAt: data.expires_at ?? null, status: data.status ?? 'pending' }
+    return { ...data, paymentRequest: data.request, amountSat: Number(data.amount_sat) }
   }
 
   async payLightningInvoice(paymentRequest) {
     const reference = createReference('PBLN')
     const data = await this.client.request('POST', '/api/lightning/pay', { request: paymentRequest, reference })
-    return {
-      id: data.id ?? data.transaction_id ?? reference, reference: data.reference ?? reference,
-      status: data.status === 'paid' ? 'completed' : data.status,
-      amountSat: Number(data.amount_sat ?? 0), feeSat: Number(data.fee_sat ?? 0),
-    }
+    return { ...data, id: data.id ?? data.transaction_id, amountSat: Number(data.amount_sat), feeSat: Number(data.fee_sat) }
   }
 
   async validateAddress({ address, chain }) {
     const normalizedChain = this.#normalizeChain(chain)
     const data = await this.client.request('POST', '/api/addresses/validate', { address, chain: normalizedChain })
-    return { address, chain, valid: data?.valid ?? false, source: this.mode }
+    return { ...data, source: this.mode }
   }
 
   async getDepositAddress(chain) {
@@ -370,22 +507,26 @@ export class BitnobPaymentProvider {
     const data = await this.client.request('POST', '/api/addresses', {
       chain: normalizedChain, label: `PayBridge ${normalizedChain} deposit`, reference: createReference('PBADDR'),
     })
-    return { address: data?.address ?? null, chain, source: this.mode }
+    return { ...data, source: this.mode }
   }
 
   #mapBeneficiary(record = {}) {
     const destination = parseDestination(record.destination)
     return {
-      id: record.id, name: record.name ?? destination.account_name ?? '',
-      accountName: destination.account_name ?? record.account_name ?? record.name ?? '',
-      country: String(destination.country ?? record.country ?? '').toUpperCase(),
-      method: destination.destination_type === 'mobile_money' ? 'mobile' : record.type === 'crypto' ? 'crypto' : 'bank',
-      provider: destination.network ?? destination.bank_name ?? destination.bank_code ?? '',
-      network: destination.network, account: destination.account_number ?? record.wallet_address ?? '',
-      asset: String(record.currency ?? destination.currency ?? '').toUpperCase(),
-      chain: record.network ?? destination.network ?? null,
-      bankCode: destination.bank_code, isActive: record.is_active ?? true,
-      isBlacklisted: record.is_blacklisted ?? false,
+      ...record,
+      id: record.id,
+      name: record.name ?? destination.account_name,
+      accountName: destination.account_name ?? record.account_name ?? record.name,
+      country: String(destination.country ?? record.country ?? '').toUpperCase() || undefined,
+      method: destination.destination_type === 'mobile_money' ? 'mobile' : record.type === 'crypto' ? 'crypto' : record.type === 'bank' ? 'bank' : undefined,
+      provider: destination.network ?? destination.bank_name ?? destination.bank_code,
+      network: destination.network,
+      account: destination.account_number ?? record.wallet_address,
+      asset: String(record.currency ?? destination.currency ?? '').toUpperCase() || undefined,
+      chain: record.network ?? destination.network,
+      bankCode: destination.bank_code,
+      isActive: record.is_active,
+      isBlacklisted: record.is_blacklisted,
     }
   }
 

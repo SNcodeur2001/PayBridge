@@ -21,16 +21,7 @@ export class WebhookService {
         throw new AppError(400, 'Payload de dépôt de compte virtuel incomplet.')
       }
       if (this.repository.rememberWebhookEvent(eventId)) return { received: true, dedup: true }
-      this.repository.addVirtualAccountDeposit({
-        eventId: eventId ?? null,
-        virtualAccountId: payload.virtual_account_id,
-        amount: String(payload.amount),
-        currency: String(payload.currency).toUpperCase(),
-        reference: payload.reference ?? null,
-        ledgerTransactionId: payload.ledger_transaction_id ?? null,
-        providerTransactionId: payload.provider_transaction_id ?? null,
-        receivedAt: new Date().toISOString(),
-      })
+      this.repository.publish({ type: eventType, data: event })
       return { received: true }
     }
 
@@ -51,7 +42,6 @@ export class WebhookService {
   #verifySignature(rawBody, signature) {
     const secret = this.settings.bitnob.webhookSecret
     if (!secret) {
-      if (!this.provider.isLive) return
       throw new AppError(401, 'Secret de webhook Bitnob non configuré.')
     }
     if (!signature) throw new AppError(401, 'Signature webhook manquante.')
