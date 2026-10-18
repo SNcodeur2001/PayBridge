@@ -110,29 +110,11 @@ export class BitnobPaymentProvider {
     return { ...(usdWallet ? { balance: usdWallet.balance, currency: usdWallet.currency } : {}), wallets }
   }
 
-  async getDeposits() {
-    const transactions = await this.#listTransactions()
-    const onChainDeposits = transactions.filter((item) => item.side === 'Credit' || String(item.type ?? '').startsWith('DEPOSIT'))
-      .map((item) => {
-        const metadata = typeof item.metadata === 'string' ? parseDestination(item.metadata) : item.metadata ?? {}
-        const currency = String(item.currency ?? '').toUpperCase()
-        const id = item.transaction_id ?? item.id ?? item.reference
-        if (!id) throw new AppError(502, 'Réponse Bitnob invalide : identifiant de dépôt absent.')
-        return {
-          ...item,
-          bitnob: item,
-          id: String(id), reference: item.reference, direction: 'in', amount: displayTransactionAmount(item), currency,
-          status: mapTransactionStatus(item.state), type: item.type,
-          chain: metadata.chain, address: metadata.address,
-          txHash: metadata.tx_hash, source: 'bitnob', createdAt: item.created_at,
-        }
-      })
-    const virtualAccountDeposits = await this.getVirtualAccountDeposits()
-    const uniqueDeposits = new Map()
-    for (const deposit of [...onChainDeposits, ...virtualAccountDeposits]) {
-      uniqueDeposits.set(deposit.id, deposit)
-    }
-    return [...uniqueDeposits.values()].sort((left, right) => new Date(right.created_at ?? right.createdAt ?? 0) - new Date(left.created_at ?? left.createdAt ?? 0))
+  async getTransactions(params = {}) {
+    const query = {}
+    if (params.limit !== undefined) query.limit = params.limit
+    if (params.cursor !== undefined) query.cursor = params.cursor
+    return this.client.request('GET', '/api/transactions', Object.keys(query).length ? query : undefined)
   }
 
   async getVirtualAccountDeposits() {
@@ -302,13 +284,6 @@ export class BitnobPaymentProvider {
       if (currency && Number.isFinite(rate)) rates[currency] = rate
     }
     return { updatedAt: data.timestamp, source: this.mode, rates, rateDetails: data.rates, skippedCurrencies: data.skipped_currencies }
-  }
-
-  async getBanks(country) {
-    const data = await this.client.request('GET', `/api/payouts/banks/${encodeURIComponent(country)}`)
-    const list = data?.banks
-    if (!Array.isArray(list)) throw new AppError(502, 'Réponse Bitnob invalide : banks absent.')
-    return { banks: list.map((item) => ({ ...item, code: item.bank_code ?? item.code, name: item.bank_name ?? item.name })) }
   }
 
   async getSupportedPayoutCountries() {

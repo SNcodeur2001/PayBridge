@@ -12,7 +12,7 @@ import { createAccountRouter } from './account.routes.js'
 export function createApiRouter(dependencies) {
   const router = Router()
   router.use(createAccountRouter(dependencies))
-  router.use('/bitnob', createBitnobRouter(dependencies))
+  router.use(createBitnobRouter(dependencies))
   router.use(createCatalogRouter(dependencies))
   router.use('/transfers', createTransferRouter(dependencies))
   router.use('/beneficiaries', createBeneficiaryRouter(dependencies))

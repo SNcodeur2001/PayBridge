@@ -6,12 +6,9 @@ import { SUPPORTED_SEND_CURRENCIES } from '../config/paybridge.js'
 export function createCatalogRouter({ provider, paymentService }) {
   const router = Router()
   router.get('/health', asyncHandler(async (_req, res) => res.json(await provider.getHealth())))
-  router.get('/wallet', asyncHandler(async (_req, res) => res.json(await provider.getWallet())))
+  router.get('/balances', asyncHandler(async (_req, res) => res.json(await provider.getWallet())))
   router.get('/rates', asyncHandler(async (_req, res) => res.json(await provider.getRates())))
-  router.get('/deposits', asyncHandler(async (_req, res) => {
-    res.json(await provider.getDeposits())
-  }))
-  router.get('/banks/:country', asyncHandler(async (req, res) => res.json(await provider.getBanks(req.params.country.toUpperCase()))))
+  router.get('/transactions', asyncHandler(async (req, res) => res.json(await provider.getTransactions(req.query))))
   router.get('/payouts/supported-countries', asyncHandler(async (_req, res) => res.json(await provider.getSupportedPayoutCountries())))
   router.get('/payouts/supported-countries/:country', asyncHandler(async (req, res) => res.json(await provider.getPayoutCountryDetails(req.params.country.toUpperCase()))))
 
