@@ -4,6 +4,7 @@ import { asyncHandler } from '../middleware/asyncHandler.js'
 
 export function createAddressRouter({ provider }) {
   const router = Router()
+  router.get('/', asyncHandler(async (_req, res) => res.json(await provider.getDepositAddresses())))
   router.post('/validate', asyncHandler(async (req, res) => {
     const { address, chain } = req.body ?? {}
     if (!address || !chain) throw new AppError(400, 'Adresse et réseau requis.')

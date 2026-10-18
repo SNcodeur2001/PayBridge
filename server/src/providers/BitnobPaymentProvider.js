@@ -110,6 +110,14 @@ export class BitnobPaymentProvider {
     return { ...(usdWallet ? { balance: usdWallet.balance, currency: usdWallet.currency } : {}), wallets }
   }
 
+  async getWalletBalance(currency) {
+    return this.client.request('GET', `/api/balances/${encodeURIComponent(String(currency).toUpperCase())}`)
+  }
+
+  async getSupportedStablecoinChains() {
+    return this.client.request('GET', '/api/stablecoins/supported-chains')
+  }
+
   async getTransactions(params = {}) {
     const query = {}
     if (params.limit !== undefined) query.limit = params.limit
@@ -322,12 +330,12 @@ export class BitnobPaymentProvider {
       ...(fundingMode === 'onchain' ? { chain: this.#normalizeChain(chain) } : {}),
       payment_reason: paymentReason, reference: payoutReference,
     })
-    const payout = unwrapEntity(data, 'payout')
+    const payout = data?.quote ?? data?.payout ?? data
     return {
       amount: toNumber(payout.amount), fee: toNumber(payout.fees),
       rate: toNumber(payout.exchange_rate?.effective_rate ?? payout.exchange_rate?.rate),
       received: toNumber(payout.settlement_amount), expiresAt: payout.expires_at,
-      receiveCurrency: payout.to_currency, quoteId: payout.quote_id, payoutId: payout.id, reference: payout.reference,
+      receiveCurrency: payout.to_currency, quoteId: payout.quote_id, payoutId: payout.id, reference: payout.reference ?? payoutReference,
       bitnob: payout,
     }
   }
@@ -348,14 +356,22 @@ export class BitnobPaymentProvider {
         ? { sender: { account_name: this.settings.payoutSenderName, country: transfer.fromCountry } }
         : {}),
     }
-    await this.client.request('POST', `/api/payouts/${encodeURIComponent(quote.quoteId)}/initialize`, {
+    await this.initializePayout(quote.quoteId, {
       quote_id: quote.quoteId, reference: transfer.reference,
       payment_reason: transfer.paymentReason,
       ...(callbackUrl ? { callback_url: callbackUrl } : {}),
       beneficiary: destination,
     })
-    const finalized = await this.client.request('POST', `/api/payouts/${encodeURIComponent(quote.quoteId)}/finalize`)
+    const finalized = await this.finalizePayout(quote.quoteId)
     return mapPayout(unwrapEntity(finalized, 'payout'))
+  }
+
+  async initializePayout(quoteId, input) {
+    return this.client.request('POST', `/api/payouts/${encodeURIComponent(quoteId)}/initialize`, input)
+  }
+
+  async finalizePayout(quoteId) {
+    return this.client.request('POST', `/api/payouts/${encodeURIComponent(quoteId)}/finalize`)
   }
 
   async getPayoutStatus(reference) {

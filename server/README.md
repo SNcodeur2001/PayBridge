@@ -25,7 +25,7 @@ Le plan Free est configuré pour éviter tout coût par défaut. Le stockage ét
 
 Configurer `BITNOB_CLIENT_ID` et `BITNOB_CLIENT_SECRET` dans `server/.env` ou dans le `.env` à la racine du dépôt, redémarrer le serveur puis appeler `GET /api/whoami`. Cette route signe l’appel Bitnob `GET /api/whoami` et renvoie son identité ainsi que les permissions. Sans identifiants valides, le serveur ne démarre pas.
 
-L’API lit les soldes, transactions, taux, bénéficiaires, adresses, clients, comptes virtuels et payouts Bitnob. `GET /api/transfers` liste les payouts et retraits Bitnob; `GET /api/transactions` transmet l’historique Bitnob avec sa pagination. Les opérations de création sont envoyées au fournisseur. `POST /api/transfers`, `POST /api/payout`, les retraits crypto et `POST /api/lightning/pay` peuvent déplacer des fonds; ces opérations sont irréversibles en production. Configurer des identifiants sandbox Bitnob pour valider les corridors et permissions avant la production. La devise PayBridge `USD` est traduite en actif source Bitnob `USDT` pour les payouts.
+L’API lit les soldes, transactions, taux, bénéficiaires, adresses, clients, comptes virtuels et payouts Bitnob. `GET /api/transfers` liste les payouts et retraits Bitnob; `GET /api/transactions` transmet l’historique Bitnob avec sa pagination. Les parcours crypto utilisent `POST /api/withdrawals` puis `GET /api/transactions/:idOrReference`. Le parcours payout peut utiliser les étapes distinctes `/api/payouts/quotes`, `/:quoteId/initialize`, `/:quoteId/finalize`, puis consulter `GET /api/payouts/:id` ou `/reference/:reference`. `POST /api/transfers` et `POST /api/payout` conservent aussi leur parcours composé. Ces opérations peuvent déplacer des fonds et sont irréversibles en production. Configurer des identifiants et une URL Sandbox Bitnob avant de les valider; l’API ne détecte ni ne force le Sandbox. La devise PayBridge `USD` est traduite en actif source Bitnob `USDT` pour les payouts.
 
 Les réponses de consultation proviennent de Bitnob. Le dépôt JSON n’est pas une source de données de bénéficiaires, soldes, transactions ou dépôts. Il sert au suivi des références d’opérations créées par PayBridge et à la déduplication des webhooks; plusieurs instances de production nécessitent un stockage partagé. Les webhooks sont vérifiés avec HMAC-SHA512 sur le corps brut.
 
@@ -52,10 +52,20 @@ Les services et le fournisseur Bitnob utilisent des classes injectées dans `cre
 |---|---|---|
 | `GET` | `/api/health` | État du serveur et fournisseur actif |
 | `GET` | `/api/balances` | Soldes disponibles fournis par Bitnob (`available_balance`) |
+| `GET` | `/api/balances/:currency` | Solde Bitnob d’un actif, par exemple `USDC` |
+| `GET` | `/api/stablecoins/supported-chains` | Réseaux supportés par Bitnob pour les stablecoins |
 | `GET` | `/api/transactions` | Transactions Bitnob, avec pagination par curseur |
+| `GET` | `/api/transactions/:idOrReference` | Détail et statut Bitnob d’une transaction |
 | `GET` | `/api/rates` | Taux de change |
 | `GET` | `/api/payouts/supported-countries` | Corridors et pays actuellement activés chez Bitnob |
 | `GET` | `/api/payouts/supported-countries/:country` | Champs bénéficiaire exigés pour un pays Bitnob |
+| `GET` | `/api/payouts` | Lister les payouts Bitnob |
+| `POST` | `/api/payouts/quotes` | Créer une cotation Bitnob |
+| `POST` | `/api/payouts/:quoteId/initialize` | Initialiser un payout avec une référence unique et un bénéficiaire |
+| `POST` | `/api/payouts/:quoteId/finalize` | Finaliser le payout; Bitnob débite le solde |
+| `GET` | `/api/payouts/:id` | Consulter un payout par identifiant |
+| `GET` | `/api/payouts/reference/:reference` | Consulter un payout par référence |
+| `POST` | `/api/withdrawals` | Créer un retrait crypto en unités minimales; référence fournie par le client |
 | `GET` | `/api/whoami` | Identité et permissions Bitnob |
 | `GET` | `/api/account-lookup?country&accountNumber&bankCode&method` | Recherche d’un titulaire |
 | `POST` | `/api/quotes` | Créer un devis |
@@ -66,6 +76,7 @@ Les services et le fournisseur Bitnob utilisent des classes injectées dans `cre
 | `POST` | `/api/lightning/invoices` | Créer une facture Lightning |
 | `POST` | `/api/lightning/pay` | Payer une facture Lightning |
 | `POST` | `/api/addresses/validate` | Vérifier le format d’une adresse crypto |
+| `GET` | `/api/addresses` | Lister les adresses gérées par Bitnob |
 | `GET` | `/api/addresses/deposit` | Lister les adresses (`?chain=BTC` filtre un réseau) |
 | `GET`, `POST` | `/api/customers` | Lister ou créer un client Bitnob |
 | `GET`, `POST` | `/api/virtual-accounts` | Lister ou créer des comptes virtuels NGN |
@@ -78,7 +89,7 @@ Les services et le fournisseur Bitnob utilisent des classes injectées dans `cre
 | `POST` | `/api/webhooks/bitnob` | Webhook Bitnob, signature HMAC et déduplication |
 | `GET` | `/api/events` | Changements d’état des transferts en SSE |
 
-La clé `API_KEY`, si configurée, protège `POST /api/payout` via `Authorization: Bearer <API_KEY>`. `ALLOWED_ORIGINS` doit contenir les origines exactes (ex. `http://localhost:5173`), séparées par des virgules, lorsque le frontend envoie `credentials: 'include'`; le middleware renvoie alors `Access-Control-Allow-Credentials: true`. Ne pas combiner les credentials avec `*`.
+La clé `API_KEY`, si configurée, protège `POST /api/payout`, les écritures `/api/payouts/*` et `POST /api/withdrawals` via `Authorization: Bearer <API_KEY>`. Elle ne protège pas encore `POST /api/transfers` ni `POST /api/lightning/pay`. `ALLOWED_ORIGINS` doit contenir les origines exactes (ex. `http://localhost:5173`), séparées par des virgules, lorsque le frontend envoie `credentials: 'include'`; le middleware renvoie alors `Access-Control-Allow-Credentials: true`. Ne pas combiner les credentials avec `*`.
 
 ## Configuration Bitnob et tunnel webhook
 

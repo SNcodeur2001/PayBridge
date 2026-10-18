@@ -7,8 +7,11 @@ export function createCatalogRouter({ provider, paymentService }) {
   const router = Router()
   router.get('/health', asyncHandler(async (_req, res) => res.json(await provider.getHealth())))
   router.get('/balances', asyncHandler(async (_req, res) => res.json(await provider.getWallet())))
+  router.get('/balances/:currency', asyncHandler(async (req, res) => res.json(await provider.getWalletBalance(req.params.currency))))
+  router.get('/stablecoins/supported-chains', asyncHandler(async (_req, res) => res.json(await provider.getSupportedStablecoinChains())))
   router.get('/rates', asyncHandler(async (_req, res) => res.json(await provider.getRates())))
   router.get('/transactions', asyncHandler(async (req, res) => res.json(await provider.getTransactions(req.query))))
+  router.get('/transactions/:id', asyncHandler(async (req, res) => res.json(await provider.getTransaction(req.params.id))))
   router.get('/payouts/supported-countries', asyncHandler(async (_req, res) => res.json(await provider.getSupportedPayoutCountries())))
   router.get('/payouts/supported-countries/:country', asyncHandler(async (req, res) => res.json(await provider.getPayoutCountryDetails(req.params.country.toUpperCase()))))
 
@@ -25,7 +28,7 @@ export function createCatalogRouter({ provider, paymentService }) {
     const sendCurrency = String(req.body?.sendCurrency ?? 'USD').toUpperCase()
     if (!Number.isFinite(amount) || amount <= 0) throw new AppError(400, 'montant invalide.')
     if (!SUPPORTED_SEND_CURRENCIES.includes(sendCurrency)) throw new AppError(400, `Devise non supportée par Bitnob : ${sendCurrency}`)
-    res.json(await paymentService.createQuote({ amount, toCountry, sendCurrency, receiveCurrency: req.body?.receiveCurrency, chain: req.body?.chain, fundingMode: req.body?.fundingMode === 'onchain' ? 'onchain' : 'offchain' }))
+    res.json(await paymentService.createQuote({ amount, toCountry, sendCurrency, receiveCurrency: req.body?.receiveCurrency, reference: req.body?.reference, paymentReason: req.body?.paymentReason, chain: req.body?.chain, fundingMode: req.body?.fundingMode === 'onchain' ? 'onchain' : 'offchain' }))
   }))
   return router
 }
