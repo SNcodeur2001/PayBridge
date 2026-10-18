@@ -1,7 +1,7 @@
 export const COUNTRIES = Object.freeze({
   SN: 'XOF', CI: 'XOF', NG: 'NGN', GH: 'GHS', KE: 'KES', CM: 'XAF', ZA: 'ZAR', FR: 'EUR', US: 'USD',
 })
-export const CURRENCIES = Object.freeze({ USD: 1, EUR: 0.92, XOF: 603.5, XAF: 603.5, NGN: 1548, GHS: 15.4, KES: 129.2, ZAR: 18.1, SATS: 95_000 })
+export const CURRENCIES = Object.freeze({ USD: 1, USDT: 1, USDC: 1, BTC: 95_000, EUR: 0.92, XOF: 603.5, XAF: 603.5, NGN: 1548, GHS: 15.4, KES: 129.2, ZAR: 18.1, SATS: 95_000 })
 export const SIMULATED_BALANCE = Object.freeze({ balanceUsd: 12480.35, currency: 'USD' })
 export const SIMULATED_WALLETS = Object.freeze([
   { currency: 'USD', balance: 12480.35, label: 'Portefeuille USD' },

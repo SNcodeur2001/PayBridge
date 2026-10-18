@@ -28,6 +28,18 @@ export class MemoryRepository {
   findBeneficiary({ account, country }) { return this.beneficiaries.find((item) => item.account === account && item.country === country) }
   addBeneficiary(beneficiary) { this.beneficiaries.unshift(beneficiary); return beneficiary }
 
+  replaceBeneficiaries(beneficiaries) {
+    this.beneficiaries = structuredClone(beneficiaries)
+    return this.listBeneficiaries()
+  }
+
+  upsertBeneficiary(beneficiary) {
+    const index = this.beneficiaries.findIndex((item) => item.id === beneficiary.id)
+    if (index < 0) this.beneficiaries.unshift(structuredClone(beneficiary))
+    else this.beneficiaries[index] = structuredClone(beneficiary)
+    return beneficiary
+  }
+
   updateBeneficiary(id, changes) {
     const existing = this.getBeneficiary(id)
     if (!existing) return null

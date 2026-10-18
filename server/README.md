@@ -15,7 +15,11 @@ API locale : `http://localhost:4000`. Le dépôt mémoire est réinitialisé au 
 
 ## Vérifier la connexion Bitnob
 
-Configurer `BITNOB_CLIENT_ID` et `BITNOB_CLIENT_SECRET` dans `server/.env` ou dans le `.env` à la racine du dépôt, redémarrer le serveur puis appeler `GET /api/bitnob/whoami`. Cette route signe uniquement l’appel Bitnob `GET /api/whoami` et renvoie l’état du client, l’environnement et les permissions. Les autres fonctions restent simulées tant que `BITNOB_PAYMENTS_ENABLED=false`.
+Configurer `BITNOB_CLIENT_ID` et `BITNOB_CLIENT_SECRET` dans `server/.env` ou dans le `.env` à la racine du dépôt, redémarrer le serveur puis appeler `GET /api/bitnob/whoami`. Cette route signe uniquement l’appel Bitnob `GET /api/whoami` et renvoie l’état du client, l’environnement et les permissions. Les opérations ci-dessous sont raccordées au fournisseur Bitnob quand `BITNOB_PAYMENTS_ENABLED=true`; à `false`, les réponses de test restent simulées.
+
+Le mode Bitnob utilise ses soldes, taux, banques, account lookup, devis, payouts, bénéficiaires, factures Lightning, adresses et suivi de payout. `POST /api/transfers` et `POST /api/payout` peuvent débiter le portefeuille Bitnob lors de la finalisation; `POST /api/lightning/pay` envoie un vrai paiement Lightning. Commencer avec des identifiants sandbox et n'activer le flag live qu'après validation du compte, des permissions, des corridors et des IP autorisées. La devise `USD` est traduite en actif source `USDT` pour les payouts.
+
+Les listes et statuts de transferts et de bénéficiaires sont lus depuis Bitnob en mode live. Le dépôt local reste en mémoire et sert de cache de travail; les données temporaires de l'application et les abonnements SSE ne survivent pas à un redémarrage. Les événements webhook Bitnob sont vérifiés avec HMAC-SHA512 sur le corps brut et reçoivent un HTTP 200 après traitement.
 
 ## Architecture
 

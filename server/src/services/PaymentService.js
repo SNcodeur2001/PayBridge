@@ -20,8 +20,9 @@ export class PaymentService {
   }
 
   async createTransfer({ amount, toCountry, sendCurrency = 'USD', beneficiary, fromCountry = 'SN', paymentReason = 'family_support' }) {
-    const quote = await this.createQuote({ amount, toCountry, sendCurrency })
     const reference = createReference()
+    const receiveCurrency = COUNTRIES[toCountry]
+    const quote = await this.provider.createQuote({ amount: Number(amount), toCountry, sendCurrency, receiveCurrency, reference, paymentReason })
     const transfer = this.repository.createTransfer({
       id: reference, reference, createdAt: nowIso(), pendingAt: nowIso(),
       beneficiaryId: beneficiary.id, beneficiaryName: beneficiary.name,
@@ -33,7 +34,18 @@ export class PaymentService {
     try {
       await this.provider.submitPayout(transfer, quote, beneficiary, this.repository)
     } catch (error) {
-      this.repository.updateTransferStatus(transfer.id, 'failed', { failureReason: error.message })
+      // Once a live request has reached Bitnob, a 5xx/timeout can mean the remote
+      // payout succeeded but its response was lost. Keep it reconcilable by reference.
+      if (!this.provider.isLive || Number(error.status) < 500) {
+        this.repository.updateTransferStatus(transfer.id, 'failed', { failureReason: error.message })
+      }
+      if (this.provider.isLive && Number(error.status) >= 500) {
+        throw new AppError(502, error.message, {
+          ...(error.details && typeof error.details === 'object' ? error.details : {}),
+          transferId: transfer.id, reference: transfer.reference,
+          reconciliationRequired: true,
+        })
+      }
       throw error
     }
     return transfer
@@ -54,7 +66,11 @@ export class PaymentService {
     }
   }
 
-  mapPayoutStatus(status = '') { return PAYOUT_STATUSES[String(status).toUpperCase()] ?? 'pending' }
+  mapPayoutStatus(status = '') {
+    const normalized = String(status).toUpperCase()
+    if (normalized === 'SUCCESS') return 'completed'
+    return PAYOUT_STATUSES[normalized] ?? 'pending'
+  }
 
   async refreshPendingTransfers() {
     if (!this.provider.isLive) return

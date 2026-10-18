@@ -44,7 +44,7 @@ export class BitnobClient {
 
     const json = await response.json().catch(() => ({}))
     if (!response.ok || json.success === false) {
-      throw new AppError(response.status >= 400 && response.status < 500 ? response.status : 502, json.message ?? `Erreur Bitnob HTTP ${response.status}`, json)
+      throw new AppError(response.status >= 400 && response.status < 500 ? response.status : 502, json.detail ?? json.message ?? json.title ?? `Erreur Bitnob HTTP ${response.status}`, json)
     }
     return json.data ?? json
   }
