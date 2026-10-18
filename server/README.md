@@ -70,7 +70,7 @@ Les services et fournisseurs utilisent des classes injectées dans `createApp`. 
 | `POST` | `/api/webhooks/bitnob` | Webhook Bitnob, signature HMAC et déduplication |
 | `GET` | `/api/events` | Changements d’état des transferts en SSE |
 
-La clé `API_KEY`, si configurée, protège `POST /api/payout` via `Authorization: Bearer <API_KEY>`. CORS autorise toutes les origines par défaut; définir `ALLOWED_ORIGINS` avec une liste CSV pour restreindre l’accès navigateur. Les opérations Bitnob de paiement restent désactivées par défaut, même si les identifiants sont présents.
+La clé `API_KEY`, si configurée, protège `POST /api/payout` via `Authorization: Bearer <API_KEY>`. `ALLOWED_ORIGINS` doit contenir les origines exactes (ex. `http://localhost:5173`), séparées par des virgules, lorsque le frontend envoie `credentials: 'include'`; le middleware renvoie alors `Access-Control-Allow-Credentials: true`. Ne pas combiner les credentials avec `*`. Les opérations Bitnob de paiement restent désactivées par défaut, même si les identifiants sont présents.
 
 ## Configuration Bitnob et tunnel webhook
 
