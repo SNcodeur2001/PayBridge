@@ -1,6 +1,6 @@
 import express from 'express'
 import { settings } from './config/settings.js'
-import { MemoryRepository } from './repositories/MemoryRepository.js'
+import { JsonFileRepository } from './repositories/JsonFileRepository.js'
 import { createPaymentProvider } from './providers/createPaymentProvider.js'
 import { BitnobClient } from './providers/BitnobClient.js'
 import { hasBitnobCredentials } from './config/settings.js'
@@ -13,7 +13,7 @@ import { createApiRouter } from './routes/api.routes.js'
 import { createWebhookRouter } from './routes/webhook.routes.js'
 import { AppError } from './core/AppError.js'
 
-export function createApp({ repository = new MemoryRepository(), provider, config = settings, bitnobConnectionService } = {}) {
+export function createApp({ repository = new JsonFileRepository(), provider, config = settings, bitnobConnectionService } = {}) {
   const paymentProvider = provider ?? createPaymentProvider(config)
   const bitnobClient = hasBitnobCredentials(config) ? new BitnobClient(config.bitnob) : null
   const connectionService = bitnobConnectionService ?? new BitnobConnectionService({ client: bitnobClient })

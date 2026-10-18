@@ -19,7 +19,8 @@ export function createBeneficiaryRouter({ repository, provider }) {
     const name = String(body.name ?? '').trim()
     const country = String(body.country ?? '').toUpperCase()
     if (name.length < 3) throw new AppError(400, 'Nom complet requis.')
-    if (digitsOnly(body.account).length < 6) throw new AppError(400, 'Numéro de compte invalide.')
+    const isCrypto = body.method === 'crypto'
+    if (isCrypto ? String(body.account ?? body.walletAddress ?? '').trim().length < 12 : digitsOnly(body.account).length < 6) throw new AppError(400, isCrypto ? 'Adresse crypto invalide.' : 'Numéro de compte invalide.')
     if (!Object.hasOwn(COUNTRIES, country)) throw new AppError(400, `Pays non supporté : ${country}`)
     const beneficiary = provider.isLive
       ? await provider.createBeneficiary({ ...body, name, country })
@@ -35,7 +36,8 @@ export function createBeneficiaryRouter({ repository, provider }) {
     if (!existing) throw new AppError(404, 'Bénéficiaire introuvable.')
     const changes = { ...req.body }
     if (changes.name !== undefined && String(changes.name).trim().length < 3) throw new AppError(400, 'Nom complet requis.')
-    if (changes.account !== undefined && digitsOnly(changes.account).length < 6) throw new AppError(400, 'Numéro de compte invalide.')
+    const cryptoBeneficiary = existing.method === 'crypto' || changes.method === 'crypto'
+    if (changes.account !== undefined && (cryptoBeneficiary ? String(changes.account).trim().length < 12 : digitsOnly(changes.account).length < 6)) throw new AppError(400, cryptoBeneficiary ? 'Adresse crypto invalide.' : 'Numéro de compte invalide.')
     if (changes.country !== undefined) {
       changes.country = String(changes.country).toUpperCase()
       if (!Object.hasOwn(COUNTRIES, changes.country)) throw new AppError(400, `Pays non supporté : ${changes.country}`)

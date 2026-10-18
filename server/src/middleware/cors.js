@@ -5,7 +5,7 @@ export function createCorsMiddleware(allowedOrigins) {
     const allowed = wildcard ? (origin ?? '*') : (allowedOrigins.includes(origin) ? origin : null)
     if (allowed) {
       res.set('Access-Control-Allow-Origin', allowed)
-      res.set('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS')
+      res.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,OPTIONS')
       res.set('Access-Control-Allow-Headers', 'Content-Type,Authorization')
       if (allowed !== '*') res.vary('Origin')
     }

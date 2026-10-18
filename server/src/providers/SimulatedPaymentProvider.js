@@ -12,6 +12,15 @@ export class SimulatedPaymentProvider {
   async getWallet() { await sleep(100); return { balance: SIMULATED_BALANCE.balanceUsd, currency: SIMULATED_BALANCE.currency, wallets: structuredClone(SIMULATED_WALLETS) } }
   async getRates() { return { updatedAt: new Date().toISOString(), source: this.mode, rates: { ...CURRENCIES, USD: 1 } } }
   async getBanks(country) { return { banks: SIMULATED_BANKS[country] ?? [] } }
+  async getDeposits() { return [] }
+  async getDepositAddresses() {
+    await sleep(100)
+    return [
+      { chain: 'bitcoin', address: SIMULATED_ADDRESSES.BTC, label: 'BTC' },
+      { chain: 'tron', address: SIMULATED_ADDRESSES.USDT, label: 'USDT' },
+      { chain: 'ethereum', address: SIMULATED_ADDRESSES.USDC, label: 'USDC' },
+    ]
+  }
 
   async lookupAccount({ country, accountNumber, bankCode }) {
     await sleep(200)
@@ -36,6 +45,15 @@ export class SimulatedPaymentProvider {
       const ok = !String(transfer.amount).endsWith('.13')
       repository.updateTransferStatus(transfer.id, ok ? 'completed' : 'failed', ok ? {} : { failureReason: 'Refus simulé du fournisseur de paiement.' })
     }, 5500)
+  }
+
+  async submitCryptoTransfer({ transfer, channel, sourceCurrency }) {
+    await sleep(500)
+    const asset = String(channel.asset ?? sourceCurrency).toUpperCase()
+    const sourceRate = CURRENCIES[sourceCurrency] ?? 1
+    const usdAmount = Number(transfer.amount) / sourceRate
+    const amount = asset === 'BTC' ? usdAmount / (CURRENCIES.BTC ?? 95_000) : usdAmount
+    return { providerRef: `sim-${crypto.randomUUID()}`, amount, currency: asset, fee: 0, status: 'completed' }
   }
 
   async getPayoutStatus() { return { status: 'PENDING' } }

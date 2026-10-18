@@ -26,6 +26,7 @@ export const settings = Object.freeze({
   apiKey: process.env.API_KEY ?? '',
   allowedOrigins: csv(process.env.ALLOWED_ORIGINS),
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? '',
+  payoutSenderName: process.env.PAYOUT_SENDER_NAME ?? 'PayBridge Africa',
 })
 
 export const hasBitnobCredentials = (config = settings) => Boolean(config.bitnob?.clientId && config.bitnob?.clientSecret)

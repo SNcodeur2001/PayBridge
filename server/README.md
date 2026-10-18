@@ -11,7 +11,7 @@ cp .env.example .env
 npm run dev
 ```
 
-API locale : `http://localhost:4000`. Le dépôt mémoire est réinitialisé au redémarrage.
+API locale : `http://localhost:4000`. Les transferts, bénéficiaires, dépôts reçus et identifiants de webhooks sont stockés dans `server/.data/store.json`, ignoré par Git.
 
 ## Déployer sur Render
 
@@ -25,9 +25,9 @@ Le plan Free est configuré pour éviter tout coût par défaut. Le stockage ét
 
 Configurer `BITNOB_CLIENT_ID` et `BITNOB_CLIENT_SECRET` dans `server/.env` ou dans le `.env` à la racine du dépôt, redémarrer le serveur puis appeler `GET /api/bitnob/whoami`. Cette route signe uniquement l’appel Bitnob `GET /api/whoami` et renvoie l’état du client, l’environnement et les permissions. Les opérations ci-dessous sont raccordées au fournisseur Bitnob quand `BITNOB_PAYMENTS_ENABLED=true`; à `false`, les réponses de test restent simulées.
 
-Le mode Bitnob utilise ses soldes, taux, banques, account lookup, devis, payouts, bénéficiaires, factures Lightning, adresses et suivi de payout. `POST /api/transfers` et `POST /api/payout` peuvent débiter le portefeuille Bitnob lors de la finalisation; `POST /api/lightning/pay` envoie un vrai paiement Lightning. Commencer avec des identifiants sandbox et n'activer le flag live qu'après validation du compte, des permissions, des corridors et des IP autorisées. La devise `USD` est traduite en actif source `USDT` pour les payouts.
+Le mode Bitnob raccorde les soldes, transactions reçues, taux, banques, vérifications de compte, devis, payouts, bénéficiaires bancaires et crypto, retraits crypto, paiements et factures Lightning, adresses, clients et comptes virtuels NGN. Les clients et comptes virtuels exigent le mode Bitnob actif. `POST /api/transfers` et `POST /api/payout` peuvent débiter le portefeuille Bitnob; les transferts crypto et `POST /api/lightning/pay` envoient des fonds. Ces opérations sont irréversibles en production. Utiliser les identifiants sandbox pour valider les corridors et les permissions. La devise `USD` est traduite en actif source `USDT` pour les payouts.
 
-Les listes et statuts de transferts et de bénéficiaires sont lus depuis Bitnob en mode live. Le dépôt local reste en mémoire et sert de cache de travail; les données temporaires de l'application et les abonnements SSE ne survivent pas à un redémarrage. Les événements webhook Bitnob sont vérifiés avec HMAC-SHA512 sur le corps brut et reçoivent un HTTP 200 après traitement.
+Les bénéficiaires sont synchronisés depuis Bitnob en mode live. Les transferts, dépôts de comptes virtuels et identifiants de déduplication sont persistés localement pour le prototype; une base partagée sera nécessaire pour plusieurs instances en production. Les webhooks sont vérifiés avec HMAC-SHA512 sur le corps brut et dédupliqués.
 
 ## Architecture
 
@@ -39,7 +39,7 @@ src/
 ├── core/                          # erreurs métier et fonctions communes
 ├── middleware/                    # CORS, API key, erreurs, async handlers
 ├── providers/                     # contrat fournisseur : simulation et Bitnob
-├── repositories/MemoryRepository.js # persistance prototype en mémoire
+├── repositories/                     # adaptateurs mémoire et fichier JSON
 ├── routes/                        # routes regroupées par domaine
 └── services/                      # workflows métier, indépendants d'Express
 ```
@@ -51,19 +51,29 @@ Les services et fournisseurs utilisent des classes injectées dans `createApp`. 
 | Méthode | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/health` | État du serveur et fournisseur actif |
-| `GET` | `/api/wallet` | Solde et portefeuilles |
+| `GET` | `/api/wallet` | Soldes Bitnob et synchronisation de secours depuis les transactions |
+| `GET` | `/api/deposits` | Historique des dépôts on-chain et NGN reçus |
 | `GET` | `/api/rates` | Taux de change |
 | `GET` | `/api/banks/:country` | Banques d’un pays |
 | `GET` | `/api/account-lookup?country&accountNumber&bankCode&method` | Recherche d’un titulaire |
 | `POST` | `/api/quotes` | Créer un devis |
 | `GET`, `POST` | `/api/transfers` | Lister ou créer un transfert |
 | `GET` | `/api/transfers/:id` | Consulter un transfert |
+| `POST` | `/api/transfers/:id/simulate-deposit` | Financer un payout on-chain en sandbox |
 | `GET`, `POST`, `PUT` | `/api/beneficiaries` | Lister, ajouter ou modifier un bénéficiaire (`PUT /:id`) |
 | `POST` | `/api/lightning/decode` | Décoder une facture Lightning |
 | `POST` | `/api/lightning/invoices` | Créer une facture Lightning |
 | `POST` | `/api/lightning/pay` | Payer une facture Lightning |
 | `POST` | `/api/addresses/validate` | Vérifier le format d’une adresse crypto |
-| `GET` | `/api/addresses/deposit?chain=BTC` | Obtenir une adresse de dépôt |
+| `GET` | `/api/addresses/deposit` | Lister les adresses (`?chain=BTC` filtre un réseau) |
+| `GET`, `POST` | `/api/customers` | Lister ou créer un client Bitnob |
+| `GET`, `POST` | `/api/virtual-accounts` | Lister ou créer des comptes virtuels NGN |
+| `GET` | `/api/virtual-accounts/supported-currencies` | Devises prises en charge |
+| `GET` | `/api/virtual-accounts/:id` | Consulter un compte virtuel |
+| `GET` | `/api/virtual-accounts/:id/transactions` | Dépôts du compte virtuel |
+| `PATCH` | `/api/virtual-accounts/:id/alias` | Modifier son alias |
+| `POST` | `/api/virtual-accounts/:id/simulate-deposit` | Simuler un dépôt (sandbox seulement) |
+| `GET` | `/api/virtual-account-deposits` | Dépôts reçus via webhook |
 | `POST` | `/api/payout` | Créer un payout pour une intégration B2B |
 | `POST` | `/api/webhooks/bitnob` | Webhook Bitnob, signature HMAC et déduplication |
 | `GET` | `/api/events` | Changements d’état des transferts en SSE |
@@ -77,5 +87,5 @@ Configurer les identifiants et `BITNOB_WEBHOOK_SECRET` dans `.env`, puis défini
 ## Limites du prototype
 
 - Le mode simulé reproduit les formes de réponse utiles à la démo; les adresses, taux, wallets, factures et statuts simulés ne correspondent pas à des fonds réels.
-- Les données et la déduplication des événements résident en mémoire. Une base persistante et un stockage durable des événements seront nécessaires avant une exploitation réelle.
-- Les endpoints Bitnob, corridors, champs et signature doivent être confirmés avec la documentation et les autorisations du compte avant activation live.
+- Le fichier JSON convient au prototype local, mais une base transactionnelle partagée est requise pour plusieurs instances en production.
+- Les opérations sortantes restent soumises aux permissions, corridors, soldes et au mode sandbox/production du compte Bitnob.

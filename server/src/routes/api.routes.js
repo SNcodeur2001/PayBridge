@@ -7,9 +7,11 @@ import { createAddressRouter } from './address.routes.js'
 import { createPayoutRouter } from './payout.routes.js'
 import { createEventRouter } from './event.routes.js'
 import { createBitnobRouter } from './bitnob.routes.js'
+import { createAccountRouter } from './account.routes.js'
 
 export function createApiRouter(dependencies) {
   const router = Router()
+  router.use(createAccountRouter(dependencies))
   router.use('/bitnob', createBitnobRouter(dependencies))
   router.use(createCatalogRouter(dependencies))
   router.use('/transfers', createTransferRouter(dependencies))
